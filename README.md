@@ -21,6 +21,7 @@ It features a robust production architecture with PostgreSQL persistence, real-t
 * **Dynamic Risk:Reward:** Calculates Entry, Stop Loss, and Take Profits (TP1-3) using Swing High/Low Fibonacci retracements.
   * *Enforces a minimum Risk:Reward ratio (Configurable, default 1:3).*
 * **Fakeout Protection:** Rejects valid patterns if Relative Volume (RVOL) is below threshold (default 2.0).
+* **Z Score Integration:** Calculate Anomalies of the coin to get score.
 * **Derivative Filters:**
   * Skips Longs if Funding Rate is overheated (> 0.02%).
   * Analyzes Basis (Spot vs. Perp premium).
