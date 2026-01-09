@@ -1,12 +1,16 @@
-# Bybit Quant Trading Bot v8.0
+# Bybit Quant Trading Bot v8.1
 
-An institutional-grade, modular cryptocurrency trading bot designed for the Bybit Exchange. This bot leverages a hybrid analysis engine combining geometric pattern recognition, quantitative metrics (RVOL, OBI, VPIN), and derivative market data (CVD, Open Interest, Funding Rates) to identify high-probability setups.
+An institutional-grade, modular cryptocurrency trading bot designed for the Bybit Exchange. This bot leverages a hybrid analysis engine combining geometric pattern recognition, Smart Money Concepts (SMC), quantitative metrics (RVOL, OBI, VPIN), and derivative market data (CVD, Open Interest, Funding Rates) to identify high-probability setups.
 
 It features a robust production architecture with PostgreSQL persistence, real-time Discord dashboards, and systemd integration.
 
 ## 🚀 Key Features
 
 ### 🧠 Advanced Analysis Engine
+* **Smart Money Concepts (SMC):**
+  * **Order Blocks:** Identifies Bullish (Demand) and Bearish (Supply) zones. Skips trades entering opposing zones.
+  * **Market Structure:** Filters entries based on Higher Highs/Lows and Lower Highs/Lows.
+  * **Validation:** Detects Break of Structure (BOS) and Change of Character (CHoCH) for confirmation.
 * **Geometric Pattern Recognition:** Automatically detects Double Tops/Bottoms, Bull/Bear Flags, Ascending Triangles, and Rectangles.
 * **Market Context Awareness:**
   * **BTC Bias Filter:** Uses Daily EMA 13/21 crosses to determine trend direction.
@@ -22,7 +26,7 @@ It features a robust production architecture with PostgreSQL persistence, real-t
   * Analyzes Basis (Spot vs. Perp premium).
 
 ### ⚙️ Production Infrastructure
-* **Modular Architecture:** Split logic for maintainability (`technicals`, `derivatives`, `quant`, `patterns`).
+* **Modular Architecture:** Split logic for maintainability (`technicals`, `derivatives`, `quant`, `patterns`, `smc`).
 * **Database Persistence:** Uses **PostgreSQL** to store trade history, prevent duplicate signals, and manage state.
 * **Discord Integration:**
   * **Rich Alerts:** Sends chart screenshots with TP targets, detailed scoring explanations, and market bias.
@@ -44,6 +48,7 @@ It features a robust production architecture with PostgreSQL persistence, real-t
 │   ├── database.py         # Connection pooling & Schema migration
 │   ├── technicals.py       # Indicators & Divergence logic
 │   ├── derivatives.py      # Funding, Basis, CVD analysis
+│   ├── smc.py              # NEW: Order Blocks, Structure, Liquidity
 │   ├── quant.py            # RVOL, OBI, Fakeout logic
 │   ├── patterns.py         # Pattern recognition algorithms
 │   └── discord_bot.py      # Chart generation & Alerting
