@@ -12,6 +12,7 @@ from modules.database import init_db
 from modules.technicals import get_technicals, detect_divergence
 from modules.quant import calculate_metrics, check_fakeout
 from modules.derivatives import analyze_derivatives
+from modules.smc import analyze_smc
 from modules.patterns import find_pattern
 from modules.discord_bot import send_alert, update_status_dashboard, run_fast_update
 
@@ -28,10 +29,8 @@ def get_btc_bias():
         curr = df.iloc[-1]
         
         bias = "Bullish" if curr['ema13'] > curr['ema21'] else "Bearish"
-        
         if bias == "Bullish" and curr['rsi'] > 75: return "Neutral (Overbought)"
         if bias == "Bearish" and curr['c'] > curr['ema13'] and curr['rsi'] < 60: return "Bearish (Dead Cat)"
-        
         return bias
     except: return "Sideways"
 
@@ -46,26 +45,33 @@ def analyze_ticker(symbol, timeframe, btc_bias, seen_symbols):
         ticker_info = exchange.fetch_ticker(symbol)
         if "ST" in ticker_info.get('info', {}).get('symbol', ''): return None
         
-        bars = exchange.fetch_ohlcv(symbol, timeframe, limit=200)
-        if len(bars) < 100: return None
+        min_candles = CONFIG['system'].get('min_candles_analysis', 200)
+        bars = exchange.fetch_ohlcv(symbol, timeframe, limit=min_candles + 50)
+        if len(bars) < min_candles: return None
+        
         df = pd.DataFrame(bars, columns=['timestamp','open','high','low','close','volume'])
         df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
         
-        # Analysis
+        # Technicals
         df = get_technicals(df)
         pattern = find_pattern(df)
         if not pattern: return None
         side = CONFIG['pattern_signals'].get(pattern)
         
+        # SMC
+        valid_smc, smc_score, smc_reasons = analyze_smc(df, side)
+        if not valid_smc: return None
+        
+        # Quant & Deriv
         df, basis, quant_score, quant_reasons = calculate_metrics(df, ticker_info)
         valid_deriv, deriv_score, deriv_reasons = analyze_derivatives(df, ticker_info, side)
         if not valid_deriv: return None
         
         div_score, div_msg = detect_divergence(df)
-        tech_score = 3 + div_score
-        tech_reasons = [f"Pattern: {pattern}", div_msg]
+        tech_score = 3 + div_score + smc_score
+        tech_reasons = [f"Pattern: {pattern}", div_msg] + smc_reasons
         
-        # Bias Filters
+        # Bias
         if "Bearish" in btc_bias and side == "Long": return None
         if "Bullish" in btc_bias and side == "Short": return None
         
@@ -100,7 +106,7 @@ def analyze_ticker(symbol, timeframe, btc_bias, seen_symbols):
             "Tech_Score": tech_score, "Tech_Reasons": ", ".join(tech_reasons),
             "Quant_Score": quant_score, "Quant_Reasons": ", ".join(quant_reasons),
             "Deriv_Score": deriv_score, "Deriv_Reasons": ", ".join(deriv_reasons),
-            "Basis": basis, "BTC_Bias": btc_bias, "Reason": pattern, "df": df
+            "SMC_Score": smc_score, "Basis": basis, "BTC_Bias": btc_bias, "Reason": pattern, "df": df
         }
     except: return None
 

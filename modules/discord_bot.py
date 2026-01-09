@@ -48,7 +48,6 @@ def send_alert(data):
     emoji = "🚀" if is_long else "🔻"
     trend_icon = "🟢" if is_long else "🔴"
     
-    # Visual Logic
     fund_val = data['df']['funding'].iloc[-1] if 'funding' in data['df'] else 0
     fund_emoji = "🔴" if abs(fund_val) > 0.01 else "🟢"
     fund_txt = "Hot" if abs(fund_val) > 0.01 else "Cool"
@@ -56,29 +55,19 @@ def send_alert(data):
     rvol = data['df']['RVOL'].iloc[-1]
     rvol_txt = "⚡ Explosive" if rvol > 3.0 else ("🔥 Strong" if rvol > 2.0 else "🌊 Normal")
     
-    rr_val = data.get('RR', 0.0)
-
-    # Formatted Blocks (Matching Image Style)
-    tech_block = (
-        f"**Pattern:** {data['Pattern']}\n"
-        f"**Trend:** {trend_icon} {data['Side']} Trend {trend_icon}\n"
-        f"**MACD:** {data.get('MACD_Signal', 'Expand')} 🟢"
-    )
-
-    deriv_block = (
-        f"**Fund:** {fund_emoji} {fund_txt} `{fund_val*100:.3f}%` | Basis: `{data['Basis']*100:.3f}%`\n"
-        f"**Flow:** Accumulating 🟢"
-    )
-
+    # Text Blocks
+    tech_block = f"**Pattern:** {data['Pattern']}\n**Trend:** {trend_icon} {data['Side']} Trend\n**MACD:** {data.get('MACD_Signal', 'Expand')} 🟢"
+    deriv_block = f"**Fund:** {fund_emoji} {fund_txt} `{fund_val*100:.3f}%` | Basis: `{data['Basis']*100:.3f}%`\n**Flow:** Accumulating 🟢"
     quant_block = f"**RVOL:** `{rvol:.1f}x` ({rvol_txt})\n**OBI:** `0.31`"
-    score_block = f"Tech: `{data['Tech_Score']}/5` | Quant: `{data['Quant_Score']}/5` | Deriv: `{data['Deriv_Score']}/5`"
-    targets_txt = f"TP1: `{format_price(data['TP1'])}`\nTP2: `{format_price(data['TP2'])}`\nTP3: `{format_price(data['TP3'])}`"
-
-    explanations = (
-        f"**Tech:** {data.get('Tech_Reasons', '-')}\n"
-        f"**Quant:** {data.get('Quant_Reasons', '-')}\n"
-        f"**Deriv:** {data.get('Deriv_Reasons', '-')}"
-    )
+    
+    # NEW: SMC Text
+    smc_txt = "None"
+    if "In Bullish OB" in data['Tech_Reasons']: smc_txt = "🟢 Demand Zone"
+    elif "In Bearish OB" in data['Tech_Reasons']: smc_txt = "🔴 Supply Zone"
+    elif "Higher Low" in data['Tech_Reasons']: smc_txt = "📈 Higher Low (Dip)"
+    elif "Lower High" in data['Tech_Reasons']: smc_txt = "📉 Lower High (Rally)"
+    
+    explanations = f"**Tech:** {data.get('Tech_Reasons', '-')}\n**Quant:** {data.get('Quant_Reasons', '-')}\n**Deriv:** {data.get('Deriv_Reasons', '-')}"
 
     embed = {
         "title": f"{emoji} SIGNAL: {symbol} ({data['Pattern']})",
@@ -87,13 +76,13 @@ def send_alert(data):
         "fields": [
             {"name": "🎯 Entry", "value": f"`{format_price(data['Entry'])}`", "inline": True},
             {"name": "🛑 Stop", "value": f"`{format_price(data['SL'])}`", "inline": True},
-            {"name": "💰 Rewards", "value": f"RR (TP3): **1:{rr_val}**", "inline": True},
-            {"name": "🏁 Targets", "value": targets_txt, "inline": False},
-            {"name": "📊 Technicals", "value": tech_block, "inline": False},
+            {"name": "💰 Rewards", "value": f"RR (TP3): **1:{data.get('RR', 0.0)}**", "inline": True},
+            {"name": "🏁 Targets", "value": f"TP1: `{format_price(data['TP1'])}`\nTP2: `{format_price(data['TP2'])}`\nTP3: `{format_price(data['TP3'])}`", "inline": False},
+            {"name": "📊 Technicals & SMC", "value": f"{tech_block}\n**SMC:** {smc_txt}", "inline": False},
             {"name": "⛽ Derivatives", "value": deriv_block, "inline": False},
             {"name": "🧮 Quant", "value": quant_block, "inline": False},
-            {"name": "🏆 Scores", "value": score_block, "inline": False},
-            {"name": "📝 Scoring Analysis", "value": explanations, "inline": False},
+            {"name": "🏆 Scores", "value": f"Tech: `{data['Tech_Score']}` | Quant: `{data['Quant_Score']}` | Deriv: `{data['Deriv_Score']}`", "inline": False},
+            {"name": "📝 Analysis", "value": explanations, "inline": False},
             {"name": "🧠 Context", "value": f"Bias: **{data['BTC_Bias']}**", "inline": False}
         ],
         "footer": {"text": f"V8 Bot | {get_now().strftime('%Y-%m-%d %H:%M:%S')}"}
@@ -109,16 +98,15 @@ def send_alert(data):
             
         msg_id, ch_id = (r.json().get('id'), r.json().get('channel_id')) if r.status_code in [200, 201] else (None, None)
         
-        # Insert to DB
         conn = get_conn()
         cur = conn.cursor()
         cur.execute("""
             INSERT INTO trades (symbol, side, timeframe, pattern, entry_price, sl_price, tp1, tp2, tp3, reason, 
-            tech_score, quant_score, deriv_score, basis, btc_bias, message_id, channel_id, status)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'Waiting Entry')
+            tech_score, quant_score, deriv_score, smc_score, basis, btc_bias, message_id, channel_id, status)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'Waiting Entry')
         """, (symbol, data['Side'], data['Timeframe'], data['Pattern'], data['Entry'], data['SL'], data['TP1'], 
               data['TP2'], data['TP3'], data['Reason'], data['Tech_Score'], data['Quant_Score'], data['Deriv_Score'], 
-              data['Basis'], data['BTC_Bias'], msg_id, ch_id))
+              data['SMC_Score'], data['Basis'], data['BTC_Bias'], msg_id, ch_id))
         conn.commit()
         release_conn(conn)
     except Exception as e: print(e)
@@ -131,7 +119,7 @@ def update_status_dashboard():
     conn = get_conn()
     try:
         cur = conn.cursor(cursor_factory=RealDictCursor)
-        cur.execute("SELECT symbol, side, status, entry_hit_at, created_at, message_id, channel_id FROM trades WHERE status NOT LIKE '%Closed%' ORDER BY created_at DESC")
+        cur.execute("SELECT symbol, side, status, entry_hit_at, created_at FROM trades WHERE status NOT LIKE '%Closed%' ORDER BY created_at DESC")
         trades = cur.fetchall()
         lines = [f"`{(t['entry_hit_at'] or t['created_at']).strftime('%H:%M')}` {'🟢' if 'Active' in t['status'] else '⏳'} **{t['symbol']}** ({t['side']}): {t['status']}" for t in trades]
         content = "**📊 LIVE DASHBOARD**\n" + ("\n".join(lines) if lines else "No active trades.")
@@ -151,4 +139,4 @@ def update_status_dashboard():
     finally: release_conn(conn)
 
 def run_fast_update():
-    update_status_dashboard() # Placeholder for full logic to save space
+    update_status_dashboard()

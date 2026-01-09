@@ -9,29 +9,22 @@ def analyze_derivatives(df, ticker, side):
     score = 1
     reasons = []
     
-    # 1. Funding
     funding = float(ticker.get('info', {}).get('fundingRate', 0))
-    if side == "Long" and funding > 0.02: 
-        return False, 0, ["Funding Overheated"]
-    
-    if abs(funding) < 0.01:
-        score += 1
-        reasons.append(f"Cool Funding")
+    if side == "Long" and funding > 0.02: return False, 0, ["Funding Hot"]
+    if abs(funding) < 0.01: score += 1; reasons.append("Cool Funding")
 
-    # 2. Basis
     mark = float(ticker.get('last', 0))
     index = float(ticker.get('info', {}).get('indexPrice', mark))
     basis = (mark - index) / index if index > 0 else 0
     
-    # 3. CVD Divergence
-    price_slope = get_slope(df['close'].iloc[-10:])
+    p_slope = get_slope(df['close'].iloc[-10:])
     cvd_slope = get_slope(df['CVD'].iloc[-10:])
     
-    if price_slope > 0 and cvd_slope < 0:
-        if side == "Short": score += 2; reasons.append("Bear CVD Div (+2)")
-        elif side == "Long": score -= 2; reasons.append("Against Bear CVD (-2)")
-    elif price_slope < 0 and cvd_slope > 0:
-        if side == "Long": score += 2; reasons.append("Bull CVD Div (+2)")
-        elif side == "Short": score -= 2; reasons.append("Against Bull CVD (-2)")
+    if p_slope > 0 and cvd_slope < 0:
+        if side == "Short": score += 2; reasons.append("Bear CVD Div")
+        elif side == "Long": score -= 2
+    elif p_slope < 0 and cvd_slope > 0:
+        if side == "Long": score += 2; reasons.append("Bull CVD Div")
+        elif side == "Short": score -= 2
 
     return True, score, reasons

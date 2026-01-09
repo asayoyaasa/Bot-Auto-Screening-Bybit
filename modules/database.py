@@ -26,7 +26,7 @@ def init_db():
                     symbol VARCHAR(100), side VARCHAR(10), timeframe VARCHAR(5), pattern VARCHAR(50),
                     entry_price DECIMAL, sl_price DECIMAL, tp1 DECIMAL, tp2 DECIMAL, tp3 DECIMAL,
                     status VARCHAR(50) DEFAULT 'Waiting Entry', reason TEXT,
-                    tech_score INT, quant_score INT, deriv_score INT,
+                    tech_score INT, quant_score INT, deriv_score INT, smc_score INT,
                     basis DECIMAL, btc_bias VARCHAR(50),
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, 
                     entry_hit_at TIMESTAMP, closed_at TIMESTAMP, exit_price DECIMAL, 

@@ -8,7 +8,6 @@ def detect_divergence(df):
     close = df['close'].values
     k = df['stoch_rsi_k'].values
     
-    # Simple Divergence Logic (Last 2 peaks)
     high_idx = argrelextrema(close, np.greater, order=3)[0]
     low_idx = argrelextrema(close, np.less, order=3)[0]
 
