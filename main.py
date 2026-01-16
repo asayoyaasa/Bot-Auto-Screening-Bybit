@@ -40,7 +40,7 @@ def calculate_rr(entry, sl, tp3):
     risk = abs(entry - sl)
     return round(abs(tp3 - entry) / risk, 2) if risk > 0 else 0.0
 
-def analyze_ticker(symbol, timeframe, btc_bias, seen_symbols, active_signals):
+def analyze_ticker(symbol, timeframe, btc_bias, active_signals): # Accepts 4 args
     if (symbol, timeframe) in active_signals:
         return None
     if symbol in seen_symbols: return None
@@ -137,24 +137,27 @@ def scan():
     start_time = time.time()
     print(f"\n[{pd.Timestamp.now()}] 🔭 Scanning... Mode: {os.getenv('BOT_ENV', 'PROD')}")
     
+    # 1. Get Context
     btc_bias = get_btc_bias()
     print(f"📊 BTC Bias: {btc_bias}")
     
-    # 1. FETCH ACTIVE TRADES (CACHE)
+    # 2. Fetch Active Signals (The missing piece)
     active_signals = get_active_signals()
     print(f"🛡️ Active Signals Ignored: {len(active_signals)}")
     
-    signal_count = 0
+    signal_count = 0 
     
     try:
         mkts = exchange.load_markets()
+        # Filter for USDT Swaps
         syms = [s for s in mkts if mkts[s].get('swap') and mkts[s]['quote'] == 'USDT' and mkts[s].get('active')]
+        
         random.shuffle(syms)
-        syms = syms
+        syms = syms[:400] 
         
         for tf in reversed(CONFIG['system']['timeframes']):
             with ThreadPoolExecutor(max_workers=CONFIG['system']['max_threads']) as ex:
-                # 2. PASS active_signals TO WORKER
+                # FIX: Pass 'active_signals' to the function here ⬇️
                 futures = [ex.submit(analyze_ticker, s, tf, btc_bias, active_signals) for s in syms]
                 
                 for f in as_completed(futures):
@@ -165,10 +168,15 @@ def scan():
                         
     except Exception as e:
         print(f"Global Scan Error: {e}")
+        import traceback
+        traceback.print_exc() # Print full trace to debug easier
         
     finally:
+        # Calculate duration
         duration = time.time() - start_time
         print(f"✅ Scan Finished in {duration:.2f}s. Signals: {signal_count}")
+        
+        # Send completion alert to Discord
         send_scan_completion(signal_count, duration, btc_bias)
 
 if __name__ == "__main__":
