@@ -51,55 +51,122 @@ def send_alert(data):
     webhook = CONFIG['api']['discord_webhook']
     if not webhook: return False
     
+    symbol = data['Symbol']
+    
+    # 1. Generate Chart
+    image_path = None
     try:
-        image_path = generate_chart(data['df'], data['Symbol'], data['Pattern'], data['Timeframe'])
-        
+        image_path = generate_chart(data['df'], symbol, data['Pattern'], data['Timeframe'])
+    except Exception as e:
+        print(f"❌ Chart Error: {e}")
+
+    # 2. Prepare Data
+    try:
         is_long = data['Side'] == 'Long'
         color = 0x00ff00 if is_long else 0xff0000
         emoji = "🚀" if is_long else "🔻"
         
+        # Quant Formatting
         rvol = data['df']['RVOL'].iloc[-1]
         rvol_txt = "⚡ Explosive" if rvol > 3.0 else ("🔥 Strong" if rvol > 2.0 else "🌊 Normal")
         obi_val = data.get('OBI', 0.0)
-        obi_icon = "🟢" if obi_val > 0 else "🔴"
+        obi_icon = "🟢" if obi_val > 0 else ("🔴" if obi_val < 0 else "⚪")
         
-        quant_block = f"**RVOL:** `{rvol:.1f}x` ({rvol_txt})\n**Z-Score:** `{data.get('Z_Score', 0):.2f}σ`\n**ζ-Field:** `{data.get('Zeta_Score', 0):.1f}` / 100\n**OBI:** `{obi_val:.2f}` {obi_icon}"
-        smc_txt = "None"
-        if "In Bullish OB" in data['Tech_Reasons']: smc_txt = "🟢 Demand Zone"
-        elif "In Bearish OB" in data['Tech_Reasons']: smc_txt = "🔴 Supply Zone"
-        elif "Higher Low" in data['Tech_Reasons']: smc_txt = "📈 Higher Low"
-        elif "Lower High" in data['Tech_Reasons']: smc_txt = "📉 Lower High"
+        quant_block = (
+            f"**RVOL:** `{rvol:.1f}x` ({rvol_txt})\n"
+            f"**Z-Score:** `{data.get('Z_Score', 0):.2f}σ`\n"
+            f"**ζ-Field:** `{data.get('Zeta_Score', 0):.1f}` / 100\n"
+            f"**OBI:** `{obi_val:.2f}` {obi_icon}"
+        )
 
+        # SMC Analysis Text
+        tech_reasons_str = str(data.get('Tech_Reasons', ''))
+        smc_txt = "None"
+        if "Bullish OB" in tech_reasons_str: smc_txt = "🟢 Demand Zone (Order Block)"
+        elif "Bearish OB" in tech_reasons_str: smc_txt = "🔴 Supply Zone (Order Block)"
+        elif "Higher Low" in tech_reasons_str: smc_txt = "📈 Higher Low (Market Structure)"
+        elif "Lower High" in tech_reasons_str: smc_txt = "📉 Lower High (Market Structure)"
+
+        # Scores Block
+        scores_txt = (
+            f"Tech: `{data['Tech_Score']}` | "
+            f"Quant: `{data['Quant_Score']}` | "
+            f"Deriv: `{data['Deriv_Score']}` | "
+            f"SMC: `{data['SMC_Score']}` | "  # <--- Clearly separated
+        )
+        
+        # Detailed Analysis
+        analysis_txt = (
+            f"**Tech:** {tech_reasons_str}\n"
+            f"**Quant:** {data.get('Quant_Reasons', '-')}\n"
+            f"**Deriv:** {data.get('Deriv_Reasons', '-')}"
+            f"**SMC:** {smc_reasons_str if smc_reasons_str else '-'}\n" # <--- Separated line
+        )
+        
+        # --- NEW LEGEND TEXT ---
+        legend_txt = (
+            "• **Z-Score:** `>3.0`=Nuclear (Inst. Vol) | `>2.0`=Strong\n"
+            "• **ζ-Field:** `>70`=High Prob (Trend Aligned) | `<30`=Weak\n"
+            "• **OBI:** `>0.3`=Bullish Orderbook | `<-0.3`=Bearish Orderbook"
+        )
+
+        # 3. Construct Embed
         embed = {
-            "title": f"{emoji} SIGNAL: {data['Symbol']} ({data['Pattern']})",
+            "title": f"{emoji} SIGNAL: {symbol} ({data['Pattern']})",
             "description": f"**{data['Side']}** | **{data['Timeframe']}**",
             "color": color,
             "fields": [
                 {"name": "🎯 Entry", "value": f"`{format_price(data['Entry'])}`", "inline": True},
                 {"name": "🛑 Stop", "value": f"`{format_price(data['SL'])}`", "inline": True},
                 {"name": "💰 Rewards", "value": f"RR: **1:{data.get('RR', 0.0)}**", "inline": True},
+                
                 {"name": "🏁 Targets", "value": f"TP1: `{format_price(data['TP1'])}`\nTP2: `{format_price(data['TP2'])}`\nTP3: `{format_price(data['TP3'])}`", "inline": False},
+                
                 {"name": "📊 Technicals", "value": f"**Pattern:** {data['Pattern']}\n**Trend:** {emoji} {data['Side']}\n**SMC:** {smc_txt}", "inline": False},
-                {"name": "🧮 Quant", "value": quant_block, "inline": False},
+                
+                {"name": "🧮 Quant Models", "value": quant_block, "inline": False},
+                
+                {"name": "🏆 Scores", "value": scores_txt, "inline": False},
+                
+                {"name": "📝 Analysis", "value": analysis_txt, "inline": False},
+                
+                # ADDED LEGEND HERE
+                {"name": "ℹ️ Metrics Guide", "value": legend_txt, "inline": False},
+                
                 {"name": "🧠 Context", "value": f"Bias: **{data['BTC_Bias']}**", "inline": False}
             ],
-            "footer": {"text": f"V8 Bot | {get_now().strftime('%H:%M:%S')}"}
+            "footer": {"text": f"V8 Bot | {get_now().strftime('%Y-%m-%d %H:%M:%S')}"}
         }
         
+        # 4. Send Request
         payload = {"content": "", "embeds": [embed]}
-        if image_path:
-            with open(image_path, 'rb') as f: r = requests.post(webhook, data={'payload_json': json.dumps(payload)}, files={'file': f}, params={"wait": "true"})
-        else: r = requests.post(webhook, json=payload, params={"wait": "true"})
         
+        if image_path:
+            with open(image_path, 'rb') as f:
+                r = requests.post(webhook, data={'payload_json': json.dumps(payload)}, files={'file': f}, params={"wait": "true"})
+        else:
+            r = requests.post(webhook, json=payload, params={"wait": "true"})
+            
+        # 5. Save to DB
         if r.status_code in [200, 201]:
             conn = get_conn()
             cur = conn.cursor()
-            cur.execute("""INSERT INTO trades (symbol, side, timeframe, pattern, entry_price, sl_price, tp1, tp2, tp3, reason, tech_score, quant_score, deriv_score, smc_score, basis, btc_bias, z_score, zeta_score, obi, tech_reasons, quant_reasons, deriv_reasons, message_id, channel_id, status) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'Waiting Entry')""", 
-                        (data['Symbol'], data['Side'], data['Timeframe'], data['Pattern'], data['Entry'], data['SL'], data['TP1'], data['TP2'], data['TP3'], data['Reason'], data['Tech_Score'], data['Quant_Score'], data['Deriv_Score'], data['SMC_Score'], data['Basis'], data['BTC_Bias'], data['Z_Score'], data['Zeta_Score'], data['OBI'], data['Tech_Reasons'], data['Quant_Reasons'], data['Deriv_Reasons'], r.json().get('id'), r.json().get('channel_id')))
+            cur.execute("""
+                INSERT INTO trades (symbol, side, timeframe, pattern, entry_price, sl_price, tp1, tp2, tp3, reason, 
+                tech_score, quant_score, deriv_score, smc_score, basis, btc_bias, z_score, zeta_score, obi, 
+                tech_reasons, quant_reasons, deriv_reasons, message_id, channel_id, status, smc_reasons)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'Waiting Entry')
+            """, (symbol, data['Side'], data['Timeframe'], data['Pattern'], data['Entry'], data['SL'], data['TP1'], 
+                  data['TP2'], data['TP3'], data['Reason'], data['Tech_Score'], data['Quant_Score'], data['Deriv_Score'], 
+                  data['SMC_Score'], data['Basis'], data['BTC_Bias'], data['Z_Score'], data['Zeta_Score'], data['OBI'], 
+                  tech_reasons_str, data['Quant_Reasons'], data['Deriv_Reasons'], r.json().get('id'), r.json().get('channel_id'), data['SMC_Reasons']))
             conn.commit()
             release_conn(conn)
             return True
-    except Exception as e: print(f"Alert Error: {e}"); return False
+            
+    except Exception as e:
+        print(f"Alert Error: {e}")
+        return False
     finally:
         if image_path and os.path.exists(image_path): os.remove(image_path)
 

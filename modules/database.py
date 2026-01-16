@@ -24,17 +24,44 @@ def init_db():
 
 def migrate_schema(conn):
     cur = conn.cursor()
-    required = {
-        "id": "SERIAL PRIMARY KEY", "symbol": "VARCHAR(100)", "side": "VARCHAR(10)", 
-        "timeframe": "VARCHAR(5)", "pattern": "VARCHAR(50)",
-        "entry_price": "DECIMAL", "sl_price": "DECIMAL", "tp1": "DECIMAL", "tp2": "DECIMAL", "tp3": "DECIMAL",
-        "rr": "DECIMAL", "status": "VARCHAR(50) DEFAULT 'Waiting Entry'", "reason": "TEXT",
-        "tech_score": "INT", "quant_score": "INT", "deriv_score": "INT", "smc_score": "INT DEFAULT 0",
-        "z_score": "DECIMAL DEFAULT 0", "zeta_score": "DECIMAL DEFAULT 0", "obi": "DECIMAL DEFAULT 0",
-        "basis": "DECIMAL", "btc_bias": "VARCHAR(50)",
-        "tech_reasons": "TEXT", "quant_reasons": "TEXT", "deriv_reasons": "TEXT",
-        "created_at": "TIMESTAMP DEFAULT CURRENT_TIMESTAMP", "entry_hit_at": "TIMESTAMP", 
-        "closed_at": "TIMESTAMP", "exit_price": "DECIMAL", "message_id": "VARCHAR(50)", "channel_id": "VARCHAR(50)"
+    required_columns = {
+        "id": "SERIAL PRIMARY KEY",
+        "symbol": "VARCHAR(100)", 
+        "side": "VARCHAR(10)", 
+        "timeframe": "VARCHAR(5)", 
+        "pattern": "VARCHAR(50)",
+        "entry_price": "DECIMAL", 
+        "sl_price": "DECIMAL", 
+        "tp1": "DECIMAL", "tp2": "DECIMAL", "tp3": "DECIMAL",
+        "rr": "DECIMAL",
+        "status": "VARCHAR(50) DEFAULT 'Waiting Entry'", 
+        "reason": "TEXT",
+        
+        # SCORES
+        "tech_score": "INT", 
+        "quant_score": "INT", 
+        "deriv_score": "INT", 
+        "smc_score": "INT DEFAULT 0",
+        
+        # METRICS
+        "z_score": "DECIMAL DEFAULT 0", 
+        "zeta_score": "DECIMAL DEFAULT 0", 
+        "obi": "DECIMAL DEFAULT 0",
+        "basis": "DECIMAL", 
+        "btc_bias": "VARCHAR(50)",
+        
+        # REASONS (Added smc_reasons)
+        "tech_reasons": "TEXT",
+        "quant_reasons": "TEXT",
+        "deriv_reasons": "TEXT",
+        "smc_reasons": "TEXT",  # <--- NEW COLUMN
+        
+        "created_at": "TIMESTAMP DEFAULT CURRENT_TIMESTAMP", 
+        "entry_hit_at": "TIMESTAMP", 
+        "closed_at": "TIMESTAMP", 
+        "exit_price": "DECIMAL", 
+        "message_id": "VARCHAR(50)", 
+        "channel_id": "VARCHAR(50)"
     }
     try:
         cur.execute("SELECT to_regclass('public.trades');")

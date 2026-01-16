@@ -67,8 +67,10 @@ def analyze_ticker(symbol, timeframe, btc_bias, active_signals):
         
         # 5. Scores & Bias
         div_score, div_msg = detect_divergence(df)
-        tech_score = 3 + div_score + smc_score
+        tech_score = 3 + div_score
         tech_reasons = [f"Pattern: {pattern}", div_msg] + smc_reasons
+
+        total_score = tech_score + smc_score + quant_score + deriv_score
         
         if "Bearish" in btc_bias and side == "Long": return None
         if "Bullish" in btc_bias and side == "Short": return None
@@ -108,6 +110,7 @@ def analyze_ticker(symbol, timeframe, btc_bias, active_signals):
             "BTC_Bias": btc_bias, "Reason": pattern, 
             "Tech_Reasons": ", ".join(tech_reasons),
             "Quant_Reasons": ", ".join(quant_reasons),
+            "SMC_Reasons": ", ".join([r for r in smc_reasons if r]), # <--- NEW FIELD
             "Deriv_Reasons": ", ".join(deriv_reasons), "df": df
         }
     except: return None
