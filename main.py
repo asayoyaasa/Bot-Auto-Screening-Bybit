@@ -43,7 +43,6 @@ def calculate_rr(entry, sl, tp3):
 def analyze_ticker(symbol, timeframe, btc_bias, active_signals): # Accepts 4 args
     if (symbol, timeframe) in active_signals:
         return None
-    if symbol in seen_symbols: return None
     try:
         ticker_info = exchange.fetch_ticker(symbol)
         if "ST" in ticker_info.get('info', {}).get('symbol', ''): return None
