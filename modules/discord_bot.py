@@ -3,6 +3,9 @@ import json
 import os
 import mplfinance as mpf
 import pytz
+import pandas as pd
+import numpy as np
+from scipy.signal import argrelextrema
 from datetime import datetime
 from psycopg2.extras import RealDictCursor
 from modules.config_loader import CONFIG
@@ -21,20 +24,87 @@ def format_price(value):
 def generate_chart(df, symbol, pattern, timeframe):
     filename = f"chart_{symbol.replace('/','')}_{timeframe}.png"
     try:
-        plot_df = df.iloc[-80:].copy()
+        # Slice the last 100 candles for the chart
+        plot_df = df.iloc[-100:].copy()
+
+        # --- 1. Find Peaks/Valleys for Trendlines ---
+        n = 3 # Must match order in patterns.py roughly
+        # Use iloc for integer indexing to find extrema indices
+        min_idx = argrelextrema(plot_df['low'].values, np.less_equal, order=n)[0]
+        max_idx = argrelextrema(plot_df['high'].values, np.greater_equal, order=n)[0]
+
+        # Get the actual datetime indicies and price values
+        peak_dates = plot_df.index[max_idx]
+        peak_vals = plot_df['high'].iloc[max_idx]
+        valley_dates = plot_df.index[min_idx]
+        valley_vals = plot_df['low'].iloc[min_idx]
+
+        tlines = []
+        tl_colors = []
+
+        # --- 2. Define Lines Based on Pattern ---
+        # We connect the last few identified peaks/valleys
+        if pattern in ['ascending_triangle', 'bullish_rectangle', 'double_top']:
+            # Resistance Line (Connect Peaks)
+            if len(peak_dates) >= 2:
+                 tlines.append([(peak_dates[-2], peak_vals[-2]), (peak_dates[-1], peak_vals[-1])])
+                 tl_colors.append('red')
+
+        if pattern in ['descending_triangle', 'bullish_rectangle', 'double_bottom']:
+            # Support Line (Connect Valleys)
+            if len(valley_dates) >= 2:
+                 tlines.append([(valley_dates[-2], valley_vals[-2]), (valley_dates[-1], valley_vals[-1])])
+                 tl_colors.append('green')
+                 
+        if pattern in ['bull_flag', 'ascending_triangle']:
+             # Ascending Support Line
+             if len(valley_dates) >= 2:
+                 tlines.append([(valley_dates[-2], valley_vals[-2]), (valley_dates[-1], valley_vals[-1])])
+                 tl_colors.append('green')
+
+        if pattern in ['bear_flag', 'descending_triangle']:
+             # Descending Resistance Line
+             if len(peak_dates) >= 2:
+                 tlines.append([(peak_dates[-2], peak_vals[-2]), (peak_dates[-1], peak_vals[-1])])
+                 tl_colors.append('red')
+
+        # --- 3. Setup Chart Style & Panels ---
         mc = mpf.make_marketcolors(up='#2ebd85', down='#f6465d', edge='inherit', wick='inherit', volume='in')
         s  = mpf.make_mpf_style(base_mpf_style='nightclouds', marketcolors=mc)
+        
         apds = []
+        # EMA on main panel
         if 'EMA_Fast' in plot_df.columns: apds.append(mpf.make_addplot(plot_df['EMA_Fast'], color='cyan', width=1))
-        if 'MACD_h' in plot_df.columns:
+        
+        # MACD on separate panel (panel 1)
+        has_macd = 'MACD_h' in plot_df.columns
+        if has_macd:
             colors = ['#2ebd85' if v >= 0 else '#f6465d' for v in plot_df['MACD_h']]
             apds.append(mpf.make_addplot(plot_df['MACD_h'], type='bar', panel=1, color=colors, ylabel='MACD'))
         
-        mpf.plot(plot_df, type='candle', style=s, addplot=apds, title=f"\n{symbol} ({timeframe}) - {pattern}", 
-                 figsize=(12, 6), panel_ratios=(3,1), savefig=dict(fname=filename, dpi=100, bbox_inches='tight'), 
-                 volume=False, closefig=True)
+        # Define panel ratios: [Price, MACD, Volume] or [Price, Volume]
+        # Volume will automatically take the next available panel index
+        ratios = (3, 1, 1) if has_macd else (3, 1)
+
+        # --- 4. Plot ---
+        kwargs = dict(
+            type='candle', style=s, addplot=apds, 
+            title=f"\n{symbol} ({timeframe}) - {pattern}",
+            figsize=(12, 8), # Increased height for volume panel
+            panel_ratios=ratios,
+            volume=True, # ENABLE VOLUME
+            savefig=dict(fname=filename, dpi=100, bbox_inches='tight')
+        )
+        
+        # Add trendlines if they exist
+        if tlines:
+            kwargs['tlines'] = dict(tlines=tlines, colors=tl_colors, linewidths=1.5, alpha=0.7)
+            
+        mpf.plot(plot_df, **kwargs)
         return filename
-    except: return None
+    except Exception as e: 
+        print(f"Chart Error: {e}")
+        return None
 
 def send_alert(data):
     webhook = CONFIG['api']['discord_webhook']
