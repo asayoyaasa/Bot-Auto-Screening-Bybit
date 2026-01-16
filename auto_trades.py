@@ -10,12 +10,16 @@ from modules.database import get_conn, release_conn
 
 # --- ⚙️ CONFIGURATION ---
 TARGET_LEVERAGE = 25    
-RISK_PERCENT = 0.01          # Risk 1% of Equity per trade
-MAX_POSITIONS = 20           # Max Concurrent OPEN positions
+RISK_PERCENT = 0.01           # Risk 1% of Equity per trade
+MAX_POSITIONS = 20            # Max Concurrent OPEN positions
 TP_SPLIT = [0.30, 0.30, 0.40] # 30% TP1, 30% TP2, 40% TP3
 
 # Logging Setup
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logging.basicConfig(
+    level=logging.INFO, 
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    datefmt='%H:%M:%S'
+)
 logger = logging.getLogger("AutoTrader")
 
 # REST API Connection (CCXT)
@@ -90,14 +94,16 @@ def place_split_tps(symbol, side, total_qty, tp1, tp2, tp3):
     """
     try:
         # Determine TP side (Opposite of Entry)
-        tp_side = 'sell' if side.lower() == 'buy' else 'buy'
+        # Note: 'side' comes from Pybit (Title Case 'Buy'/'Sell') or CCXT (lower)
+        tp_side = 'sell' if str(side).lower() == 'buy' else 'buy'
         
         # Calculate Splits
+        # amount_to_precision ensures we respect exchange decimals
         q1 = float(exchange.amount_to_precision(symbol, total_qty * TP_SPLIT[0]))
         q2 = float(exchange.amount_to_precision(symbol, total_qty * TP_SPLIT[1]))
         q3 = float(exchange.amount_to_precision(symbol, total_qty * TP_SPLIT[2]))
         
-        # Adjust remainder to ensure 100% close
+        # Adjust remainder to ensure 100% close (fix floating point issues)
         current_sum = q1 + q2 + q3
         if current_sum != total_qty:
             diff = total_qty - current_sum
@@ -106,12 +112,13 @@ def place_split_tps(symbol, side, total_qty, tp1, tp2, tp3):
 
         params = {'reduceOnly': True}
         
-        # Batch execution could be used here, but sequential is fine for now
+        logger.info(f"⚡ Placing TPs for {symbol}: {q1} | {q2} | {q3}")
+        
+        # Place Orders sequentially
         exchange.create_order(symbol, 'limit', tp_side, q1, float(tp1), params)
         exchange.create_order(symbol, 'limit', tp_side, q2, float(tp2), params)
         exchange.create_order(symbol, 'limit', tp_side, q3, float(tp3), params)
         
-        logger.info(f"⚡ TPs Placed for {symbol}: {q1}@{tp1} | {q2}@{tp2} | {q3}@{tp3}")
         return True
     except Exception as e:
         logger.error(f"⚠️ TP Placement Failed {symbol}: {e}")
@@ -120,7 +127,7 @@ def place_split_tps(symbol, side, total_qty, tp1, tp2, tp3):
 def on_execution_update(message):
     """
     WebSocket Callback: Listens for Order Fills ('Trade').
-    Triggers TP placement logic.
+    Triggers TP placement logic immediately.
     """
     try:
         data = message.get('data', [])
@@ -226,7 +233,7 @@ def on_position_update(message):
     except: pass
 
 # ---------------------------------------------------------
-# 📥 SIGNAL INGESTION (Polling)
+# 📥 SIGNAL INGESTION (Loop)
 # ---------------------------------------------------------
 def ingest_fresh_signals():
     """Reads 'Waiting Entry' from scanner table, applies Risk/Lev, inserts to active_trades."""
@@ -257,7 +264,7 @@ def ingest_fresh_signals():
             FROM trades t
             LEFT JOIN active_trades a ON t.id = a.signal_id
             WHERE t.status = 'Waiting Entry'
-            AND t.created_at >= NOW() - INTERVAL '24 hours'
+            AND t.created_at >= NOW() - INTERVAL '12 hours'
             AND a.id IS NULL
         """
         cur.execute(query)
@@ -280,17 +287,20 @@ def ingest_fresh_signals():
             
             # B. Risk Calc (1% of Equity)
             # Qty = Risk ($) / |Entry - SL|
-            risk_amt = total_equity * RISK_PERCENT
-            price_diff = abs(entry - sl)
+            margin_cost = total_equity * RISK_PERCENT
             
-            if price_diff == 0: continue
+            # 2. Calculate Total Position Value (Notional)
+            # Example: $1.00 Cost * 25x Leverage = $25.00 Position
+            position_value = margin_cost * final_leverage
             
-            qty_coins = risk_amt / price_diff
+            # 3. Calculate Quantity in Coins
+            # Example: $25.00 / $0.50 Entry = 50 Coins
+            qty_coins = position_value / entry
             
             # Check Min Notional (Approx $6 for Bybit)
             notional = qty_coins * entry
-            if notional < 6.0:
-                logger.warning(f"⚠️ Signal {sym} skipped: Position size ${notional:.2f} too small.")
+            if position_value < 6.0:
+                logger.warning(f"⚠️ Signal {sym} skipped: Position value ${position_value:.2f} is below Bybit min ($6).")
                 continue
 
             # C. Insert PENDING Trade
@@ -299,7 +309,7 @@ def ingest_fresh_signals():
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'PENDING')
             """, (sig_id, sym, side, entry, sl, tp1, tp2, tp3, qty_coins, final_leverage))
             
-            logger.info(f"📥 Signal Ingested: {sym} | Lev: {final_leverage}x | Size: ${notional:.1f}")
+            logger.info(f"📥 Signal Ingested: {sym} | Lev: {final_leverage}x | Cost: ${margin_cost:.2f}")
             current_active += 1
             
         conn.commit()
@@ -309,34 +319,29 @@ def ingest_fresh_signals():
         release_conn(conn)
 
 # ---------------------------------------------------------
-# 🚀 SMART EXECUTION (With Debugging)
+# 🚀 SMART EXECUTION (Limit or Market)
 # ---------------------------------------------------------
 def execute_pending_orders():
+    """
+    Checks PENDING orders.
+    - If price is BETTER than entry -> MARKET Buy.
+    - If price is WORSE than entry -> LIMIT Buy.
+    """
     conn = get_conn()
     try:
         cur = conn.cursor()
-        # Fetch pending orders
         cur.execute("SELECT id, symbol, side, entry_price, sl_price, quantity, leverage FROM active_trades WHERE status = 'PENDING'")
         orders = cur.fetchall()
         
-        if not orders:
-            # print("💤 No pending orders to execute.") # Uncomment to verify loop is running
-            return
-
-        logger.info(f"🔎 Found {len(orders)} PENDING orders. Processing...")
+        if not orders: return 
 
         for order in orders:
             oid, sym, side, entry, sl, qty, lev = order
-            logger.info(f"👉 Processing {sym}: {side} | Qty: {qty} | Entry: {entry}")
-
+            
             try:
                 # 1. Set Leverage
-                try: 
-                    exchange.set_leverage(int(lev), sym)
-                    logger.info(f"   ✅ Leverage set to {lev}x for {sym}")
-                except Exception as e: 
-                    # Leverage often fails if already set, which is fine.
-                    logger.warning(f"   ⚠️ Leverage set skipped/failed: {e}")
+                try: exchange.set_leverage(int(lev), sym)
+                except: pass
 
                 # 2. Check LIVE Price
                 ticker = exchange.fetch_ticker(sym)
@@ -350,42 +355,90 @@ def execute_pending_orders():
                 type_side = 'buy' if side == 'Long' else 'sell'
                 params = {'stopLoss': float(sl)}
                 
-                # Precision Handling (Crucial for execution success)
+                # Precision Handling
                 qty = float(exchange.amount_to_precision(sym, qty))
                 
-                logger.info(f"   📊 Price Check: Market ${current_price} vs Entry ${entry}")
-
                 res = None
                 
-                # 3. Execution Decision
+                # 3. Decision
                 if is_better_price:
-                    logger.info(f"   ⚡ ACTION: MARKET ORDER (Price is better)")
+                    logger.info(f"⚡ {sym}: Price Better ({current_price} vs {entry}). Executing MARKET...")
                     res = exchange.create_order(sym, 'market', type_side, qty, None, params)
                 else:
-                    logger.info(f"   ⏳ ACTION: LIMIT ORDER (Waiting for price)")
+                    logger.info(f"⏳ {sym}: Waiting ({current_price} vs {entry}). Placing LIMIT...")
                     res = exchange.create_order(sym, 'limit', type_side, entry, qty, params)
                 
-                # 4. Verification & DB Update
+                # 4. Update DB
                 if res and 'id' in res:
-                    order_id = res['id']
-                    order_status = res['status'] # 'open', 'closed' (filled)
-                    
-                    cur.execute("UPDATE active_trades SET order_id = %s, status = 'OPEN' WHERE id = %s", (order_id, oid))
+                    new_status = 'OPEN' 
+                    # If Market order, it fills instantly, so next loop will catch TPs via Safety Net or WS
+                    cur.execute("UPDATE active_trades SET order_id = %s, status = %s WHERE id = %s", (res['id'], new_status, oid))
                     conn.commit()
-                    
-                    logger.info(f"   ✅ SUCCESS: Order Placed! ID: {order_id} | Status: {order_status}")
-                    logger.info(f"   📝 DB Updated for Trade ID {oid}")
-                else:
-                    logger.error(f"   ❌ FAILED: API returned no ID. Response: {res}")
+                    logger.info(f"✅ Order Placed for {sym} (ID: {res['id']})")
 
             except Exception as e:
-                logger.error(f"   ❌ CRITICAL EXECUTION ERROR {sym}: {e}")
-                # Optional: Mark failed so it doesn't retry infinitely?
-                # cur.execute("UPDATE active_trades SET status = 'FAILED' WHERE id = %s", (oid,))
-                # conn.commit()
+                logger.error(f"❌ Execution Failed {sym}: {e}")
+                cur.execute("UPDATE active_trades SET status = 'FAILED' WHERE id = %s", (oid,))
+                
+        conn.commit()
+    except Exception as e:
+        logger.error(f"Exec Loop Error: {e}")
+    finally:
+        release_conn(conn)
+
+# ---------------------------------------------------------
+# 🛡️ SAFETY NET (Catch missed TPs)
+# ---------------------------------------------------------
+def check_missed_tps():
+    """
+    Backup loop: Checks for trades that are marked 'OPEN' in DB
+    but are already FILLED on the exchange.
+    Useful if WebSocket misses the event.
+    """
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        # Find trades that we think are just 'OPEN' (Entry placed, no TPs yet)
+        cur.execute("""
+            SELECT id, symbol, side, order_id, tp1, tp2, tp3 
+            FROM active_trades 
+            WHERE status = 'OPEN' AND order_id IS NOT NULL
+        """)
+        stuck_trades = cur.fetchall()
+        
+        for trade in stuck_trades:
+            t_id, sym, side, oid, tp1, tp2, tp3 = trade
+            
+            try:
+                # 1. Check Order Status on Exchange
+                order = exchange.fetch_order(oid, sym)
+                status = order['status'] # 'open', 'closed', 'canceled'
+                
+                if status == 'closed':
+                    # It is FILLED! We missed the WebSocket event.
+                    logger.warning(f"⚠️ Safety Net: Found filled entry for {sym} with no TPs. Placing now...")
+                    
+                    # Get current size
+                    pos = exchange.fetch_position(sym)
+                    size = float(pos['contracts'])
+                    
+                    if size > 0:
+                        success = place_split_tps(sym, side, size, tp1, tp2, tp3)
+                        if success:
+                            cur.execute("UPDATE active_trades SET status = 'OPEN_TPS_SET', updated_at = NOW() WHERE id = %s", (t_id,))
+                            conn.commit()
+                            logger.info(f"✅ Safety Net: TPs recovered for {sym}")
+                            
+                elif status == 'canceled':
+                    # Entry was canceled, close the DB row
+                    cur.execute("UPDATE active_trades SET status = 'CANCELLED' WHERE id = %s", (t_id,))
+                    conn.commit()
+                    
+            except Exception as e:
+                logger.error(f"Safety Check Error {sym}: {e}")
                 
     except Exception as e:
-        logger.error(f"Global Exec Loop Error: {e}")
+        logger.error(f"Global Safety Loop Error: {e}")
     finally:
         release_conn(conn)
 
@@ -457,11 +510,12 @@ if __name__ == "__main__":
     logger.info("🔌 WebSocket Connected.")
     
     # 3. Schedule Jobs (Foreground)
-    schedule.every(1).minutes.do(ingest_fresh_signals)
-    schedule.every(10).seconds.do(execute_pending_orders) # Fast polling for pending
+    schedule.every(1).minutes.do(ingest_fresh_signals)      # Check for new trades
+    schedule.every(5).seconds.do(execute_pending_orders)    # Fast Execution
+    schedule.every(10).seconds.do(check_missed_tps)         # Safety Net
     schedule.every().day.at("00:00").do(generate_daily_report)
     
-    logger.info("🚀 Bot is LIVE. Press Ctrl+C to stop.")
+    logger.info(f"🚀 Bot is LIVE. Monitoring {MAX_POSITIONS} Max Positions.")
     
     while True:
         schedule.run_pending()
