@@ -74,17 +74,33 @@ def calculate_zeta_field(df, basis):
         # print(f"Zeta Error: {e}")
         return 50.0, 0, ""
 
+def calculate_obi(ticker):
+    """
+    Calculates Order Book Imbalance (OBI) from the top of the book.
+    Range: -1.0 (Bearish) to +1.0 (Bullish)
+    """
+    try:
+        bid_vol = ticker.get('bidVolume', 0)
+        ask_vol = ticker.get('askVolume', 0)
+        
+        if (bid_vol + ask_vol) == 0: return 0.0
+        
+        obi = (bid_vol - ask_vol) / (bid_vol + ask_vol)
+        return obi
+    except: return 0.0
+
+
 def calculate_metrics(df, ticker):
     # 1. Basis
     mark = float(ticker.get('last', 0))
     index = float(ticker.get('info', {}).get('indexPrice', mark))
     basis = (mark - index) / index if index > 0 else 0
     
-    # 2. RVOL (Standard)
+    # 2. RVOL
     df['Vol_SMA'] = ta.sma(df['volume'], length=20)
     df['RVOL'] = df['volume'] / df['Vol_SMA']
     
-    # 3. Z-Score (Standard)
+    # 3. Z-Score
     df['Vol_Z'] = calculate_z_score(df['volume'], window=20)
     z_score = df['Vol_Z'].iloc[-1]
     
@@ -92,8 +108,11 @@ def calculate_metrics(df, ticker):
     df['delta'] = np.where(df['close'] > df['open'], df['volume'], -df['volume'])
     df['CVD'] = df['delta'].cumsum()
     
-    # 5. NEW: Citadel ζ-Field Math
+    # 5. Zeta Field
     zeta_score, zeta_bonus, zeta_reason = calculate_zeta_field(df, basis)
+    
+    # 6. OBI (NEW)
+    obi = calculate_obi(ticker)
     
     # === SCORING ===
     score = 2
@@ -101,24 +120,23 @@ def calculate_metrics(df, ticker):
     
     # RVOL Logic
     rvol = df['RVOL'].iloc[-1]
-    if rvol > 5.0:
-        score += 1
-        reasons.append("Nuclear RVOL")
-    elif rvol > 2.0:
-        reasons.append("Valid RVOL")
+    if rvol > 5.0: score += 1; reasons.append("Nuclear RVOL")
+    elif rvol > 2.0: reasons.append("Valid RVOL")
     
     # Z-Score Logic
-    if z_score > 3.0:
-        score += 2
-        reasons.append(f"High Z-Score ({z_score:.1f})")
+    if z_score > 3.0: score += 2; reasons.append(f"High Z-Score ({z_score:.1f})")
         
-    # Zeta Field Logic
-    if zeta_bonus > 0:
-        score += zeta_bonus
-        reasons.append(zeta_reason)
+    # Zeta Logic
+    if zeta_bonus > 0: score += zeta_bonus; reasons.append(zeta_reason)
 
-    return df, basis, z_score, zeta_score, score, reasons
+    # OBI Logic (Bonus for strong imbalance)
+    if obi > 0.3: score += 1; reasons.append(f"Bullish OBI ({obi:.2f})")
+    elif obi < -0.3: score += 1; reasons.append(f"Bearish OBI ({obi:.2f})")
+
+    # Return all metrics including OBI
+    return df, basis, z_score, zeta_score, obi, score, reasons
 
 def check_fakeout(df, min_rvol):
     if df['RVOL'].iloc[-1] < min_rvol: return False, "Fakeout (Low Vol)"
     return True, ""
+    

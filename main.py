@@ -63,7 +63,7 @@ def analyze_ticker(symbol, timeframe, btc_bias, seen_symbols):
         if not valid_smc: return None
         
         # Quant & Deriv (UPDATED UNPACKING)
-        df, basis, z_score, zeta_score, quant_score, quant_reasons = calculate_metrics(df, ticker_info)
+        df, basis, z_score, zeta_score, obi, quant_score, quant_reasons = calculate_metrics(df, ticker_info)
         
         valid_deriv, deriv_score, deriv_reasons = analyze_derivatives(df, ticker_info, side)
         if not valid_deriv: return None
@@ -110,6 +110,7 @@ def analyze_ticker(symbol, timeframe, btc_bias, seen_symbols):
             "SMC_Score": smc_score, "Basis": basis, 
             "Z_Score": z_score, 
             "Zeta_Score": zeta_score,  # NEW
+            "OBI": obi,  # <--- NEW FIELD
             "BTC_Bias": btc_bias, "Reason": pattern, "df": df
         }
     except: return None

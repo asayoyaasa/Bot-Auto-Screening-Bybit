@@ -54,7 +54,10 @@ def send_alert(data):
     
     rvol = data['df']['RVOL'].iloc[-1]
     rvol_txt = "⚡ Explosive" if rvol > 3.0 else ("🔥 Strong" if rvol > 2.0 else "🌊 Normal")
-
+    
+    # OBI Formatting
+    obi_val = data['OBI']
+    obi_icon = "🟢" if obi_val > 0 else "🔴"
     # Text Blocks
     tech_block = f"**Pattern:** {data['Pattern']}\n**Trend:** {trend_icon} {data['Side']} Trend\n**MACD:** {data.get('MACD_Signal', 'Expand')} 🟢"
     deriv_block = f"**Fund:** {fund_emoji} {fund_txt} `{fund_val*100:.3f}%` | Basis: `{data['Basis']*100:.3f}%`\n**Flow:** Accumulating 🟢"
@@ -62,7 +65,7 @@ def send_alert(data):
         f"**RVOL:** `{rvol:.1f}x` ({rvol_txt})\n"
         f"**Z-Score:** `{data['Z_Score']:.2f}σ`\n"
         f"**ζ-Field:** `{data['Zeta_Score']:.1f}` / 100\n"
-        f"**OBI:** `0.31`"
+        f"**OBI:** `{obi_val:.2f}` {obi_icon}"    
     )
     
     # NEW: SMC Text
