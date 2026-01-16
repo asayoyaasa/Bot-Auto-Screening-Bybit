@@ -38,11 +38,13 @@
         "min_rvol": 2.0
     },
     "patterns": {
+        "tolerance": 0.015,
         "double_top": true,
         "double_bottom": true,
         "bull_flag": true,
         "bear_flag": true,
         "ascending_triangle": true,
+        "descending_triangle": true, 
         "bullish_rectangle": true
     },
     "pattern_signals": {
@@ -51,6 +53,7 @@
         "bull_flag": "Long",
         "bear_flag": "Short",
         "ascending_triangle": "Long",
+        "descending_triangle": "Short", 
         "bullish_rectangle": "Long"
     }
 }
