@@ -30,7 +30,37 @@ def init_db():
     except Exception as e:
         print(f"❌ DB Init Error: {e}")
         exit(1)
+
+def get_active_signals():
+    """
+    Returns a set of (symbol, timeframe) tuples for trades that are NOT closed.
+    Used to prevent duplicate alerts.
+    """
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        # Fetch trades that are Waiting, Active, or partially closed (Hit TP1/2)
+        # We exclude 'Closed' and 'Cancelled'
+        query = """
+            SELECT symbol, timeframe 
+            FROM trades 
+            WHERE status NOT LIKE '%Closed%' 
+            AND status NOT LIKE '%Cancelled%'
+            AND status NOT LIKE '%Stop Loss%'
+        """
+        cur.execute(query)
+        rows = cur.fetchall()
         
+        # Return as a set for O(1) lookup speed
+        # Format: {('BTC/USDT:USDT', '4h'), ('ETH/USDT:USDT', '1h')}
+        return {(row[0], row[1]) for row in rows}
+    except Exception as e:
+        print(f"⚠️ Error fetching active signals: {e}")
+        return set()
+    finally:
+        release_conn(conn)        
+
+
 def migrate_schema(conn):
     """
     Checks the existing 'trades' table and adds missing columns dynamically.

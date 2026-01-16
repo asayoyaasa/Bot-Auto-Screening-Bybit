@@ -15,6 +15,7 @@ from modules.derivatives import analyze_derivatives
 from modules.smc import analyze_smc
 from modules.patterns import find_pattern
 from modules.discord_bot import send_alert, update_status_dashboard, run_fast_update, send_scan_completion # <--- Import new function
+from modules.database import get_active_signals # <--- Import this
 
 exchange = ccxt.bybit({'apiKey': CONFIG['api']['bybit_key'], 'secret': CONFIG['api']['bybit_secret'], 'options': {'defaultType': 'swap'}})
 
@@ -39,7 +40,9 @@ def calculate_rr(entry, sl, tp3):
     risk = abs(entry - sl)
     return round(abs(tp3 - entry) / risk, 2) if risk > 0 else 0.0
 
-def analyze_ticker(symbol, timeframe, btc_bias, seen_symbols):
+def analyze_ticker(symbol, timeframe, btc_bias, seen_symbols, active_signals):
+    if (symbol, timeframe) in active_signals:
+        return None
     if symbol in seen_symbols: return None
     try:
         ticker_info = exchange.fetch_ticker(symbol)
@@ -137,36 +140,35 @@ def scan():
     btc_bias = get_btc_bias()
     print(f"📊 BTC Bias: {btc_bias}")
     
-    seen_symbols = []
-    signal_count = 0 # Track signals found
+    # 1. FETCH ACTIVE TRADES (CACHE)
+    active_signals = get_active_signals()
+    print(f"🛡️ Active Signals Ignored: {len(active_signals)}")
+    
+    signal_count = 0
     
     try:
         mkts = exchange.load_markets()
-        # Filter for USDT Swaps
         syms = [s for s in mkts if mkts[s].get('swap') and mkts[s]['quote'] == 'USDT' and mkts[s].get('active')]
-        
-        # Limit to 400 random pairs to respect API limits if needed, or scan all
         random.shuffle(syms)
-        syms = syms 
+        syms = syms
         
         for tf in reversed(CONFIG['system']['timeframes']):
             with ThreadPoolExecutor(max_workers=CONFIG['system']['max_threads']) as ex:
-                futures = [ex.submit(analyze_ticker, s, tf, btc_bias, seen_symbols) for s in syms]
+                # 2. PASS active_signals TO WORKER
+                futures = [ex.submit(analyze_ticker, s, tf, btc_bias, active_signals) for s in syms]
+                
                 for f in as_completed(futures):
                     res = f.result()
                     if res: 
-                        send_alert(res)
-                        signal_count += 1
+                        success = send_alert(res)
+                        if success: signal_count += 1
                         
     except Exception as e:
         print(f"Global Scan Error: {e}")
         
     finally:
-        # Calculate duration
         duration = time.time() - start_time
         print(f"✅ Scan Finished in {duration:.2f}s. Signals: {signal_count}")
-        
-        # Send completion alert to Discord
         send_scan_completion(signal_count, duration, btc_bias)
 
 if __name__ == "__main__":
