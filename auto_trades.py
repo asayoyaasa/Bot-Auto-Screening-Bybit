@@ -11,7 +11,7 @@ from modules.database import get_conn, release_conn
 # --- ⚙️ CONFIGURATION ---
 TARGET_LEVERAGE = 25    
 RISK_PERCENT = 0.01           # Risk 1% of Equity per trade
-MAX_POSITIONS = 20            # Max Concurrent OPEN positions
+MAX_POSITIONS = 40            # Max Concurrent OPEN positions
 TP_SPLIT = [0.30, 0.30, 0.40] # 30% TP1, 30% TP2, 40% TP3
 
 # Logging Setup
@@ -387,18 +387,16 @@ def execute_pending_orders():
         release_conn(conn)
 
 # ---------------------------------------------------------
-# 🛡️ SAFETY NET (Catch missed TPs)
+# 🛡️ SAFETY NET (Robust Version)
 # ---------------------------------------------------------
 def check_missed_tps():
     """
     Backup loop: Checks for trades that are marked 'OPEN' in DB
     but are already FILLED on the exchange.
-    Useful if WebSocket misses the event.
     """
     conn = get_conn()
     try:
         cur = conn.cursor()
-        # Find trades that we think are just 'OPEN' (Entry placed, no TPs yet)
         cur.execute("""
             SELECT id, symbol, side, order_id, tp1, tp2, tp3 
             FROM active_trades 
@@ -410,15 +408,34 @@ def check_missed_tps():
             t_id, sym, side, oid, tp1, tp2, tp3 = trade
             
             try:
-                # 1. Check Order Status on Exchange
-                order = exchange.fetch_order(oid, sym)
-                status = order['status'] # 'open', 'closed', 'canceled'
+                order_status = None
                 
-                if status == 'closed':
+                # 1. Try Fetch Order (with suppression param)
+                try:
+                    # 'acknowledged': True silences the "last 500 orders" warning
+                    order = exchange.fetch_order(oid, sym, params={'acknowledged': True})
+                    order_status = order['status']
+                except Exception as e:
+                    # If fetch_order fails (e.g. order too old), search Closed Orders manually
+                    # logger.warning(f"Fetch Order failed for {sym}, searching history... {e}")
+                    pass
+
+                # 2. Fallback: Search Recent History if direct fetch failed
+                if not order_status:
+                    try:
+                        # Look in last 50 closed orders
+                        closed_orders = exchange.fetch_closed_orders(sym, limit=50)
+                        for o in closed_orders:
+                            if str(o['id']) == str(oid):
+                                order_status = o['status']
+                                break
+                    except: pass
+                
+                # 3. Process Status
+                if order_status == 'closed':
                     # It is FILLED! We missed the WebSocket event.
-                    logger.warning(f"⚠️ Safety Net: Found filled entry for {sym} with no TPs. Placing now...")
+                    logger.warning(f"⚠️ Safety Net: Found filled entry for {sym} (ID: {oid}). Placing TPs...")
                     
-                    # Get current size
                     pos = exchange.fetch_position(sym)
                     size = float(pos['contracts'])
                     
@@ -429,10 +446,10 @@ def check_missed_tps():
                             conn.commit()
                             logger.info(f"✅ Safety Net: TPs recovered for {sym}")
                             
-                elif status == 'canceled':
-                    # Entry was canceled, close the DB row
+                elif order_status == 'canceled':
                     cur.execute("UPDATE active_trades SET status = 'CANCELLED' WHERE id = %s", (t_id,))
                     conn.commit()
+                    logger.info(f"🗑️ Safety Net: Marked {sym} as CANCELLED.")
                     
             except Exception as e:
                 logger.error(f"Safety Check Error {sym}: {e}")
