@@ -24,49 +24,47 @@ def format_price(value):
 def generate_chart(df, symbol, pattern, timeframe):
     filename = f"chart_{symbol.replace('/','')}_{timeframe}.png"
     try:
-        # Slice the last 100 candles for the chart
         plot_df = df.iloc[-100:].copy()
 
-        # --- 1. Find Peaks/Valleys for Trendlines ---
+        # 1. Find Peaks/Valleys
         n = 3 
         min_idx = argrelextrema(plot_df['low'].values, np.less_equal, order=n)[0]
         max_idx = argrelextrema(plot_df['high'].values, np.greater_equal, order=n)[0]
 
-        # Get the actual datetime indices and price values
-        peak_dates = plot_df.index[max_idx]
-        peak_vals = plot_df['high'].iloc[max_idx] # This is a Series
-        valley_dates = plot_df.index[min_idx]
-        valley_vals = plot_df['low'].iloc[min_idx] # This is a Series
+        # 2. Extract Data & Convert to Native Python Types
+        # Convert index to pydatetime to ensure mplfinance accepts it
+        peak_dates = plot_df.index[max_idx].to_pydatetime()
+        peak_vals = plot_df['high'].iloc[max_idx].values
+        
+        valley_dates = plot_df.index[min_idx].to_pydatetime()
+        valley_vals = plot_df['low'].iloc[min_idx].values
 
         tlines = []
         tl_colors = []
 
-        # --- 2. Define Lines Based on Pattern ---
-        # FIX: Use .iloc[] for positional indexing on Series
+        # Helper to safely add lines
+        def add_line(dates, vals, color):
+            if len(dates) >= 2:
+                # Explicitly cast prices to standard float
+                p1 = (dates[-2], float(vals[-2]))
+                p2 = (dates[-1], float(vals[-1]))
+                tlines.append([p1, p2])
+                tl_colors.append(color)
 
-        # Resistance Line (Connect Peaks)
+        # 3. Define Lines Based on Pattern
         if pattern in ['ascending_triangle', 'bullish_rectangle', 'double_top', 'bear_flag', 'descending_triangle']:
-            if len(peak_dates) >= 2:
-                 # Start Point: (Date[-2], Price[-2]) -> End Point: (Date[-1], Price[-1])
-                 p1 = (peak_dates[-2], peak_vals.iloc[-2])
-                 p2 = (peak_dates[-1], peak_vals.iloc[-1])
-                 tlines.append([p1, p2])
-                 tl_colors.append('red')
+            add_line(peak_dates, peak_vals, 'red') # Resistance
 
-        # Support Line (Connect Valleys)
         if pattern in ['descending_triangle', 'bullish_rectangle', 'double_bottom', 'bull_flag', 'ascending_triangle']:
-            if len(valley_dates) >= 2:
-                 p1 = (valley_dates[-2], valley_vals.iloc[-2])
-                 p2 = (valley_dates[-1], valley_vals.iloc[-1])
-                 tlines.append([p1, p2])
-                 tl_colors.append('green')
+            add_line(valley_dates, valley_vals, 'green') # Support
 
-        # --- 3. Setup Chart Style & Panels ---
+        # 4. Setup Chart
         mc = mpf.make_marketcolors(up='#2ebd85', down='#f6465d', edge='inherit', wick='inherit', volume='in')
         s  = mpf.make_mpf_style(base_mpf_style='nightclouds', marketcolors=mc)
         
         apds = []
-        if 'EMA_Fast' in plot_df.columns: apds.append(mpf.make_addplot(plot_df['EMA_Fast'], color='cyan', width=1))
+        if 'EMA_Fast' in plot_df.columns: 
+            apds.append(mpf.make_addplot(plot_df['EMA_Fast'], color='cyan', width=1))
         
         has_macd = 'MACD_h' in plot_df.columns
         if has_macd:
@@ -75,7 +73,6 @@ def generate_chart(df, symbol, pattern, timeframe):
         
         ratios = (3, 1, 1) if has_macd else (3, 1)
 
-        # --- 4. Plot ---
         kwargs = dict(
             type='candle', style=s, addplot=apds, 
             title=f"\n{symbol} ({timeframe}) - {pattern}",
