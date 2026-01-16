@@ -93,17 +93,23 @@ def place_split_tps(symbol, side, total_qty, tp1, tp2, tp3):
     Places 3 Reduce-Only Limit orders.
     """
     try:
-        # Determine TP side (Opposite of Entry)
-        # Note: 'side' comes from Pybit (Title Case 'Buy'/'Sell') or CCXT (lower)
-        tp_side = 'sell' if str(side).lower() == 'buy' else 'buy'
+        # 1. NORMALIZE SIDE (Fixes the 110017 Error)
+        # Entry could be 'Buy', 'Long', 'Sell', or 'Short'
+        side_str = str(side).lower()
         
-        # Calculate Splits
-        # amount_to_precision ensures we respect exchange decimals
+        # If Entry was Buy/Long -> We must SELL to close
+        if side_str in ['buy', 'long']:
+            tp_side = 'sell'
+        # If Entry was Sell/Short -> We must BUY to close
+        else:
+            tp_side = 'buy'
+        
+        # 2. Calculate Splits
         q1 = float(exchange.amount_to_precision(symbol, total_qty * TP_SPLIT[0]))
         q2 = float(exchange.amount_to_precision(symbol, total_qty * TP_SPLIT[1]))
         q3 = float(exchange.amount_to_precision(symbol, total_qty * TP_SPLIT[2]))
         
-        # Adjust remainder to ensure 100% close (fix floating point issues)
+        # Adjust remainder to ensure 100% close
         current_sum = q1 + q2 + q3
         if current_sum != total_qty:
             diff = total_qty - current_sum
@@ -112,9 +118,9 @@ def place_split_tps(symbol, side, total_qty, tp1, tp2, tp3):
 
         params = {'reduceOnly': True}
         
-        logger.info(f"⚡ Placing TPs for {symbol}: {q1} | {q2} | {q3}")
+        logger.info(f"⚡ Placing TPs for {symbol} ({tp_side.upper()}): {q1} | {q2} | {q3}")
         
-        # Place Orders sequentially
+        # Place Orders
         exchange.create_order(symbol, 'limit', tp_side, q1, float(tp1), params)
         exchange.create_order(symbol, 'limit', tp_side, q2, float(tp2), params)
         exchange.create_order(symbol, 'limit', tp_side, q3, float(tp3), params)
