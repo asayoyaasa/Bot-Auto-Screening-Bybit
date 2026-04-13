@@ -104,7 +104,7 @@ Create a `config.json` file in the root directory. This controls your strategy, 
         "host": "localhost",
         "database": "bybit_bot",
         "user": "postgres",
-        "password": "PrinceOfRed78@!",
+        "password": "",
         "port": "5432"
     },
     "system": {
