@@ -6,12 +6,14 @@ from modules.database import get_conn, release_conn
 from modules.logging_setup import build_component_logger
 from modules.notifications import send_event_message
 
-from modules.paper_trade_utils import normalize_side
+from modules.paper_trade_utils import normalize_execution_mode, normalize_side
+from execution.order_manager import build_tp_order_link_id
 
 TARGET_LEVERAGE = 25
 RISK_PERCENT = 0.01
 MAX_POSITIONS = 40
 TP_SPLIT = [0.30, 0.30, 0.40]
+EXECUTION_MODE = normalize_execution_mode('live')
 MODE_TAG = "[LIVE]"
 
 logger = build_component_logger('AutoTraderWS', 'auto_trades.log', json_format=True, pii_mask=True)
@@ -93,7 +95,7 @@ def fetch_closed_pnl_safe(symbol):
     return 0.0
 
 
-def update_signal_status(cur, signal_id, status, *, entry_hit=False, closed=False, exit_price=None):
+def update_signal_status(cur, signal_id, status, *, entry_hit=False, closed=False, exit_price=None, execution_mode=None):
     if not signal_id:
         return
     fields = ["status = %s"]
@@ -106,7 +108,11 @@ def update_signal_status(cur, signal_id, status, *, entry_hit=False, closed=Fals
         fields.append("exit_price = %s")
         params.append(exit_price)
     params.append(signal_id)
-    cur.execute(f"UPDATE trades SET {', '.join(fields)} WHERE id = %s", tuple(params))
+    query = f"UPDATE trades SET {', '.join(fields)} WHERE id = %s"
+    if execution_mode:
+        query += " AND execution_mode = %s"
+        params.append(execution_mode)
+    cur.execute(query, tuple(params))
 
 
 def move_stop_to_entry(symbol, side, entry_price):
@@ -127,7 +133,7 @@ def move_stop_to_entry(symbol, side, entry_price):
     )
 
 
-def place_split_tps(symbol, side, total_qty, tp1, tp2, tp3):
+def place_split_tps(symbol, side, total_qty, tp1, tp2, tp3, *, trade_id=None):
     try:
         side_str = str(side).lower()
         tp_side = 'sell' if side_str in ['buy', 'long'] else 'buy'
@@ -147,10 +153,12 @@ def place_split_tps(symbol, side, total_qty, tp1, tp2, tp3):
 
         q1, q2, q3 = qtys
         params = {'reduceOnly': True}
+        if trade_id is not None:
+            params = dict(params)
         logger.info(f"⚡ Placing TPs for {symbol} ({tp_side.upper()}): {q1} | {q2} | {q3}")
-        ex_call('create_order', symbol, 'limit', tp_side, q1, tp1, params, context=f'place tp1 {symbol}')
-        ex_call('create_order', symbol, 'limit', tp_side, q2, tp2, params, context=f'place tp2 {symbol}')
-        ex_call('create_order', symbol, 'limit', tp_side, q3, tp3, params, context=f'place tp3 {symbol}')
+        ex_call('create_order', symbol, 'limit', tp_side, q1, tp1, {**params, 'orderLinkId': build_tp_order_link_id(symbol, trade_id, 1)} if trade_id is not None else params, context=f'place tp1 {symbol}')
+        ex_call('create_order', symbol, 'limit', tp_side, q2, tp2, {**params, 'orderLinkId': build_tp_order_link_id(symbol, trade_id, 2)} if trade_id is not None else params, context=f'place tp2 {symbol}')
+        ex_call('create_order', symbol, 'limit', tp_side, q3, tp3, {**params, 'orderLinkId': build_tp_order_link_id(symbol, trade_id, 3)} if trade_id is not None else params, context=f'place tp3 {symbol}')
         return True
     except Exception as e:
         logger.error(f"⚠️ TP Placement Failed {symbol}: {e}")
@@ -171,20 +179,25 @@ def on_execution_update(message):
             try:
                 cur = conn.cursor()
                 cur.execute(
-                    "SELECT id, signal_id, tp1, tp2, tp3 FROM active_trades WHERE order_id = %s LIMIT 1",
+                    "SELECT id, signal_id, tp1, tp2, tp3, status, execution_mode FROM active_trades WHERE order_id = %s LIMIT 1",
                     (exec_item.get("orderId"),),
                 )
                 row = cur.fetchone()
                 if not row:
                     continue
 
-                t_id, signal_id, tp1, tp2, tp3 = row
+                t_id, signal_id, tp1, tp2, tp3, status, execution_mode = row
+                if execution_mode != EXECUTION_MODE or status not in ('PENDING', 'OPEN'):
+                    continue
                 logger.info(f"⚡ WS: Entry Filled for {symbol}! Placing TPs...")
                 pos = fetch_position_safe(symbol)
                 current_size = get_position_contracts(pos)
-                if current_size > 0 and place_split_tps(symbol, side, current_size, tp1, tp2, tp3):
-                    cur.execute("UPDATE active_trades SET status = 'OPEN_TPS_SET', updated_at = NOW() WHERE id = %s", (t_id,))
-                    update_signal_status(cur, signal_id, 'Active', entry_hit=True)
+                if current_size > 0 and place_split_tps(symbol, side, current_size, tp1, tp2, tp3, trade_id=t_id):
+                    cur.execute(
+                        "UPDATE active_trades SET status = 'OPEN_TPS_SET', updated_at = NOW() WHERE id = %s AND execution_mode = %s AND status IN ('PENDING', 'OPEN')",
+                        (t_id, EXECUTION_MODE),
+                    )
+                    update_signal_status(cur, signal_id, 'Active', entry_hit=True, execution_mode=EXECUTION_MODE)
                     conn.commit()
                     send_event_message(f"Entry Filled: {symbol}", [f"Side: {side}", f"TPs placed for size {current_size}"])
             except Exception as e:
@@ -209,7 +222,7 @@ def on_position_update(message):
                 cur = conn.cursor()
                 cur.execute(
                     """
-                    SELECT id, signal_id, entry_price, tp1, is_sl_moved, status 
+                    SELECT id, signal_id, entry_price, tp1, is_sl_moved, status, execution_mode 
                     FROM active_trades 
                     WHERE symbol = %s AND side = %s AND status = 'OPEN_TPS_SET' 
                     ORDER BY id DESC 
@@ -221,18 +234,20 @@ def on_position_update(message):
                 if not row:
                     continue
 
-                t_id, signal_id, entry, tp1, sl_moved, status = row
+                t_id, signal_id, entry, tp1, sl_moved, status, execution_mode = row
+                if execution_mode != EXECUTION_MODE:
+                    continue
                 if size == 0:
                     logger.info(f"🏁 WS: {symbol} Position Closed. Fetching PnL...")
                     try:
                         real_pnl = fetch_closed_pnl_safe(symbol)
-                        cur.execute("UPDATE active_trades SET status = 'CLOSED', pnl = %s, updated_at = NOW() WHERE id = %s", (real_pnl, t_id))
-                        update_signal_status(cur, signal_id, 'Closed', closed=True, exit_price=mark_price)
+                        cur.execute("UPDATE active_trades SET status = 'CLOSED', pnl = %s, updated_at = NOW() WHERE id = %s AND execution_mode = %s", (real_pnl, t_id, EXECUTION_MODE))
+                        update_signal_status(cur, signal_id, 'Closed', closed=True, exit_price=mark_price, execution_mode=EXECUTION_MODE)
                         send_event_message(f"Position Closed: {symbol}", [f"Side: {side}", f"PnL: {real_pnl}"])
                     except Exception as e:
                         logger.warning(f"Could not fetch exact PnL for {symbol}: {e}")
-                        cur.execute("UPDATE active_trades SET status = 'CLOSED', updated_at = NOW() WHERE id = %s", (t_id,))
-                        update_signal_status(cur, signal_id, 'Closed', closed=True, exit_price=mark_price)
+                        cur.execute("UPDATE active_trades SET status = 'CLOSED', updated_at = NOW() WHERE id = %s AND execution_mode = %s", (t_id, EXECUTION_MODE))
+                        update_signal_status(cur, signal_id, 'Closed', closed=True, exit_price=mark_price, execution_mode=EXECUTION_MODE)
                     conn.commit()
                     continue
 
@@ -241,7 +256,7 @@ def on_position_update(message):
                     logger.info(f"♻️ WS: {symbol} hit TP1. Moving SL to Entry...")
                     try:
                         move_stop_to_entry(symbol, side, float(entry))
-                        cur.execute("UPDATE active_trades SET is_sl_moved = TRUE WHERE id = %s", (t_id,))
+                        cur.execute("UPDATE active_trades SET is_sl_moved = TRUE WHERE id = %s AND execution_mode = %s", (t_id, EXECUTION_MODE))
                         conn.commit()
                         send_event_message(f"SL Moved to Breakeven: {symbol}", [f"Entry: {entry}", f"Current mark: {mark_price}"])
                     except Exception as sl_err:

@@ -40,7 +40,7 @@ def paper_settings():
     return merge_paper_settings(CONFIG.get('execution', {}).get('paper', {}))
 
 
-def update_signal_status(cur, signal_id, status, *, entry_hit=False, closed=False, exit_price=None):
+def update_signal_status(cur, signal_id, status, *, entry_hit=False, closed=False, exit_price=None, execution_mode=EXECUTION_MODE):
     if not signal_id:
         return
     fields = ["status = %s"]
@@ -53,7 +53,11 @@ def update_signal_status(cur, signal_id, status, *, entry_hit=False, closed=Fals
         fields.append("exit_price = %s")
         params.append(exit_price)
     params.append(signal_id)
-    cur.execute(f"UPDATE trades SET {', '.join(fields)} WHERE id = %s", tuple(params))
+    query = f"UPDATE trades SET {', '.join(fields)} WHERE id = %s"
+    if execution_mode:
+        query += " AND execution_mode = %s"
+        params.append(execution_mode)
+    cur.execute(query, tuple(params))
 
 
 def fetch_latest_candle(symbol, timeframe='1m'):

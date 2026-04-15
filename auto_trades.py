@@ -107,7 +107,7 @@ def _bybit_symbol(symbol):
 
 
 
-def update_signal_status(cur, signal_id, status, *, entry_hit=False, closed=False, exit_price=None):
+def update_signal_status(cur, signal_id, status, *, entry_hit=False, closed=False, exit_price=None, execution_mode=EXECUTION_MODE):
     if not signal_id:
         return
     fields = ["status = %s"]
@@ -120,7 +120,11 @@ def update_signal_status(cur, signal_id, status, *, entry_hit=False, closed=Fals
         fields.append("exit_price = %s")
         params.append(exit_price)
     params.append(signal_id)
-    cur.execute(f"UPDATE trades SET {', '.join(fields)} WHERE id = %s", tuple(params))
+    query = f"UPDATE trades SET {', '.join(fields)} WHERE id = %s"
+    if execution_mode:
+        query += " AND execution_mode = %s"
+        params.append(execution_mode)
+    cur.execute(query, tuple(params))
 
 
 def update_active_trade_mode(cur, active_trade_id):
@@ -387,11 +391,14 @@ def execute_pending_orders():
                     order_link_id=build_entry_order_link_id(sym, oid),
                 )
                 response = order_result.response if isinstance(order_result.response, dict) else {}
-                if response and response.get('id'):
-                    cur.execute("UPDATE active_trades SET order_id = %s, status = 'OPEN' WHERE id = %s", (response['id'], oid))
+                order_id = response.get('id') if response else None
+                if not order_id and response:
+                    order_id = response.get('orderId') or response.get('order_id')
+                if order_id:
+                    cur.execute("UPDATE active_trades SET order_id = %s, status = 'OPEN' WHERE id = %s", (order_id, oid))
                     update_signal_status(cur, signal_id, 'Order Placed')
                     conn.commit()
-                    logger.info(f"{MODE_TAG} ✅ Order Placed for {sym} (ID: {response['id']})")
+                    logger.info(f"{MODE_TAG} ✅ Order Placed for {sym} (ID: {order_id})")
             except Exception as e:
                 logger.error(f"{MODE_TAG} ❌ Execution Failed {sym}: {e}")
                 cur.execute("UPDATE active_trades SET status = 'FAILED' WHERE id = %s", (oid,))

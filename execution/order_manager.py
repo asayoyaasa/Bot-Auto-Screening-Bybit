@@ -6,6 +6,44 @@ from typing import Any, Callable, Iterable, Mapping
 from modules.paper_trade_utils import normalize_side, validate_quantity
 
 TP_SPLIT = (0.30, 0.30, 0.40)
+ORDER_SEARCH_LIMIT = 50
+
+
+def _extract_order_link_id(order: Mapping[str, Any] | None) -> str | None:
+    if not isinstance(order, Mapping):
+        return None
+    for key in ("orderLinkId", "clientOrderId", "clientOrderID"):
+        value = order.get(key)
+        if value not in (None, ""):
+            return str(value)
+    info = order.get("info", {}) if isinstance(order.get("info", {}), Mapping) else {}
+    for key in ("orderLinkId", "clientOrderId", "clientOrderID"):
+        value = info.get(key)
+        if value not in (None, ""):
+            return str(value)
+    return None
+
+
+def _resolve_order_by_link_id(exchange: Any, order_link_id: str, symbol: str | None = None) -> dict[str, Any] | None:
+    for method_name in ("fetch_open_orders", "fetch_closed_orders", "fetch_orders"):
+        method = getattr(exchange, method_name, None)
+        if not callable(method):
+            continue
+        try:
+            orders = method(symbol, ORDER_SEARCH_LIMIT) if symbol is not None else method(ORDER_SEARCH_LIMIT)
+        except TypeError:
+            try:
+                orders = method(symbol) if symbol is not None else method()
+            except Exception:
+                continue
+        except Exception:
+            continue
+        if not isinstance(orders, list):
+            continue
+        for order in orders:
+            if _extract_order_link_id(order) == order_link_id:
+                return order if isinstance(order, dict) else dict(order)
+    return None
 
 
 @dataclass(frozen=True, slots=True)
@@ -114,6 +152,10 @@ def place_split_tps(
             params = dict(params)
         logger.info(f"⚡ Placing TPs for {symbol} ({tp_side.upper()}): {q1} | {q2} | {q3}")
 
+        tp1_link_id = build_tp_order_link_id(symbol, trade_id, 1) if trade_id is not None else None
+        tp2_link_id = build_tp_order_link_id(symbol, trade_id, 2) if trade_id is not None else None
+        tp3_link_id = build_tp_order_link_id(symbol, trade_id, 3) if trade_id is not None else None
+
         retry_call(
             order_fn,
             symbol,
@@ -121,11 +163,13 @@ def place_split_tps(
             tp_side,
             q1,
             tp1,
-            {**params, "orderLinkId": build_tp_order_link_id(symbol, trade_id, 1)} if trade_id is not None else params,
+            {**params, "orderLinkId": tp1_link_id} if tp1_link_id is not None else params,
             retries=3,
             base_delay=1.0,
             logger=logger,
             context=f"place tp1 {symbol}",
+            idempotency_key=tp1_link_id,
+            resolve_idempotency_conflict=(lambda: _resolve_order_by_link_id(exchange, tp1_link_id, symbol)) if tp1_link_id is not None else None,
         )
         retry_call(
             order_fn,
@@ -134,11 +178,13 @@ def place_split_tps(
             tp_side,
             q2,
             tp2,
-            {**params, "orderLinkId": build_tp_order_link_id(symbol, trade_id, 2)} if trade_id is not None else params,
+            {**params, "orderLinkId": tp2_link_id} if tp2_link_id is not None else params,
             retries=3,
             base_delay=1.0,
             logger=logger,
             context=f"place tp2 {symbol}",
+            idempotency_key=tp2_link_id,
+            resolve_idempotency_conflict=(lambda: _resolve_order_by_link_id(exchange, tp2_link_id, symbol)) if tp2_link_id is not None else None,
         )
         retry_call(
             order_fn,
@@ -147,11 +193,13 @@ def place_split_tps(
             tp_side,
             q3,
             tp3,
-            {**params, "orderLinkId": build_tp_order_link_id(symbol, trade_id, 3)} if trade_id is not None else params,
+            {**params, "orderLinkId": tp3_link_id} if tp3_link_id is not None else params,
             retries=3,
             base_delay=1.0,
             logger=logger,
             context=f"place tp3 {symbol}",
+            idempotency_key=tp3_link_id,
+            resolve_idempotency_conflict=(lambda: _resolve_order_by_link_id(exchange, tp3_link_id, symbol)) if tp3_link_id is not None else None,
         )
         return True
     except Exception as exc:
@@ -233,6 +281,9 @@ def place_entry_order(
         "orderLinkId": order_link_id,
     }
 
+    def resolve_existing_order() -> dict[str, Any] | None:
+        return _resolve_order_by_link_id(exchange, order_link_id, symbol)
+
     if is_better_price:
         logger.info(f"⚡ {symbol}: Price Better ({current_price} vs {entry_price}). Executing MARKET...")
         response = retry_call(
@@ -247,6 +298,8 @@ def place_entry_order(
             base_delay=1.0,
             logger=logger,
             context=f"market order {symbol}",
+            idempotency_key=order_link_id,
+            resolve_idempotency_conflict=resolve_existing_order,
         )
         order_type = "market"
     else:
@@ -263,6 +316,8 @@ def place_entry_order(
             base_delay=1.0,
             logger=logger,
             context=f"limit order {symbol}",
+            idempotency_key=order_link_id,
+            resolve_idempotency_conflict=resolve_existing_order,
         )
         order_type = "limit"
 

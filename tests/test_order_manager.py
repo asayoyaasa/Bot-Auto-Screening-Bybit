@@ -69,6 +69,8 @@ def retry_call(func, *args, **kwargs):
     kwargs.pop("base_delay", None)
     kwargs.pop("logger", None)
     kwargs.pop("context", None)
+    kwargs.pop("idempotency_key", None)
+    kwargs.pop("resolve_idempotency_conflict", None)
     return func(*args, **kwargs)
 
 
@@ -124,6 +126,27 @@ def test_place_split_tps_places_three_reduce_only_orders_with_trade_id():
     assert exchange.orders[0]["params"]["orderLinkId"] == "BTCUSDT:99:tp1"
     assert exchange.orders[1]["params"]["orderLinkId"] == "BTCUSDT:99:tp2"
     assert exchange.orders[2]["params"]["orderLinkId"] == "BTCUSDT:99:tp3"
+
+
+def test_place_split_tps_without_trade_id_still_places_orders():
+    exchange = FakeExchange()
+    logger = Logger()
+
+    ok = place_split_tps(
+        exchange,
+        "BTC/USDT",
+        "Long",
+        10.0,
+        110.0,
+        120.0,
+        130.0,
+        logger=logger,
+        retry_call=retry_call,
+    )
+
+    assert ok is True
+    assert len(exchange.orders) == 3
+    assert all("orderLinkId" not in order["params"] for order in exchange.orders)
 
 
 def test_move_stop_to_entry_targets_matching_position_idx():
