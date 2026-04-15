@@ -365,10 +365,16 @@ def execute_pending_orders():
             oid, signal_id, sym, side, entry, sl, qty, lev = order
             try:
                 if IS_PAPER:
-                    cur.execute("UPDATE active_trades SET status = 'OPEN', updated_at = NOW() WHERE id = %s", (oid,))
-                    update_signal_status(cur, signal_id, 'Order Placed')
-                    conn.commit()
-                    logger.info(f"{MODE_TAG} 📝 Virtual order queued for {sym} at entry {entry}")
+                    cur.execute(
+                        "UPDATE active_trades SET status = 'OPEN', updated_at = NOW() WHERE id = %s AND execution_mode = %s AND status = 'PENDING'",
+                        (oid, EXECUTION_MODE),
+                    )
+                    if cur.rowcount:
+                        update_signal_status(cur, signal_id, 'Order Placed', execution_mode=EXECUTION_MODE)
+                        conn.commit()
+                        logger.info(f"{MODE_TAG} 📝 Virtual order queued for {sym} at entry {entry}")
+                    else:
+                        conn.rollback()
                     continue
 
                 try:
@@ -395,14 +401,24 @@ def execute_pending_orders():
                 if not order_id and response:
                     order_id = response.get('orderId') or response.get('order_id')
                 if order_id:
-                    cur.execute("UPDATE active_trades SET order_id = %s, status = 'OPEN' WHERE id = %s", (order_id, oid))
-                    update_signal_status(cur, signal_id, 'Order Placed')
-                    conn.commit()
-                    logger.info(f"{MODE_TAG} ✅ Order Placed for {sym} (ID: {order_id})")
+                    cur.execute(
+                        "UPDATE active_trades SET order_id = %s, status = 'OPEN' WHERE id = %s AND execution_mode = %s AND status = 'PENDING'",
+                        (order_id, oid, EXECUTION_MODE),
+                    )
+                    if cur.rowcount:
+                        update_signal_status(cur, signal_id, 'Order Placed', execution_mode=EXECUTION_MODE)
+                        conn.commit()
+                        logger.info(f"{MODE_TAG} ✅ Order Placed for {sym} (ID: {order_id})")
+                    else:
+                        conn.rollback()
             except Exception as e:
                 logger.error(f"{MODE_TAG} ❌ Execution Failed {sym}: {e}")
-                cur.execute("UPDATE active_trades SET status = 'FAILED' WHERE id = %s", (oid,))
-                update_signal_status(cur, signal_id, 'Cancelled', closed=True)
+                cur.execute("UPDATE active_trades SET status = 'FAILED' WHERE id = %s AND execution_mode = %s", (oid, EXECUTION_MODE))
+                if cur.rowcount:
+                    update_signal_status(cur, signal_id, 'Cancelled', closed=True, execution_mode=EXECUTION_MODE)
+                    conn.commit()
+                else:
+                    conn.rollback()
         conn.commit()
     except Exception as e:
         logger.error(f"{MODE_TAG} Exec Loop Error: {e}")
@@ -416,7 +432,10 @@ def check_missed_tps():
     conn = get_conn()
     try:
         cur = conn.cursor()
-        cur.execute("SELECT id, signal_id, symbol, side, order_id, tp1, tp2, tp3 FROM active_trades WHERE status = 'OPEN' AND order_id IS NOT NULL")
+        cur.execute(
+            "SELECT id, signal_id, symbol, side, order_id, tp1, tp2, tp3 FROM active_trades WHERE status = 'OPEN' AND order_id IS NOT NULL AND execution_mode = %s",
+            (EXECUTION_MODE,),
+        )
         stuck_trades = cur.fetchall()
         for trade in stuck_trades:
             t_id, signal_id, sym, side, oid, tp1, tp2, tp3 = trade
@@ -437,16 +456,25 @@ def check_missed_tps():
                     pos = fetch_position_safe(sym)
                     size = resolve_position_contracts(pos)
                     if size > 0 and place_split_tps_manager(exchange, sym, side, size, tp1, tp2, tp3, logger=logger, retry_call=retry_call, trade_id=t_id):
-                        cur.execute("UPDATE active_trades SET status = 'OPEN_TPS_SET', updated_at = NOW() WHERE id = %s", (t_id,))
-                        update_signal_status(cur, signal_id, 'Active', entry_hit=True)
-                        conn.commit()
-                        logger.info(f"✅ Safety Net: TPs recovered for {sym}")
-                        send_event_message(f"Recovered Missing TPs: {sym}", [f"Order ID: {oid}", f"Recovered size: {size}"])
+                        cur.execute(
+                            "UPDATE active_trades SET status = 'OPEN_TPS_SET', updated_at = NOW() WHERE id = %s AND execution_mode = %s AND status = 'OPEN'",
+                            (t_id, EXECUTION_MODE),
+                        )
+                        if cur.rowcount:
+                            update_signal_status(cur, signal_id, 'Active', entry_hit=True, execution_mode=EXECUTION_MODE)
+                            conn.commit()
+                            logger.info(f"✅ Safety Net: TPs recovered for {sym}")
+                            send_event_message(f"Recovered Missing TPs: {sym}", [f"Order ID: {oid}", f"Recovered size: {size}"])
+                        else:
+                            conn.rollback()
                 elif order_status == 'canceled':
-                    cur.execute("UPDATE active_trades SET status = 'CANCELLED' WHERE id = %s", (t_id,))
-                    update_signal_status(cur, signal_id, 'Cancelled', closed=True)
-                    conn.commit()
-                    logger.info(f"🗑️ Safety Net: Marked {sym} as CANCELLED.")
+                    cur.execute("UPDATE active_trades SET status = 'CANCELLED' WHERE id = %s AND execution_mode = %s AND status = 'OPEN'", (t_id, EXECUTION_MODE))
+                    if cur.rowcount:
+                        update_signal_status(cur, signal_id, 'Cancelled', closed=True, execution_mode=EXECUTION_MODE)
+                        conn.commit()
+                        logger.info(f"🗑️ Safety Net: Marked {sym} as CANCELLED.")
+                    else:
+                        conn.rollback()
             except Exception as e:
                 logger.error(f"Safety Check Error {sym}: {e}")
     except Exception as e:

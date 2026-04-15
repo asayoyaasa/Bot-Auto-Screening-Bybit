@@ -1,3 +1,3 @@
 #!/bin/bash
-sudo systemctl restart bybit_bot
-echo "Bot Restarted at $(date)" >> /var/log/bot_restart.log
+sudo systemctl restart bybit-bot bybit-auto-trades
+echo "Bot restarted at $(date)" >> /var/log/bot_restart.log

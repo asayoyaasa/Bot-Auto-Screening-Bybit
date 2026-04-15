@@ -494,6 +494,11 @@ def poll_telegram_commands():
                 f"Reason: {snap['paused'].get('reason') or '-'}",
                 f"Active signals: {snap['active_signals']}",
                 f"Active positions: {snap['active_positions']}",
+                f"Scanner healthy: {snap.get('scanner_healthy')}",
+                f"Scanner age (s): {snap.get('scanner_heartbeat_age_seconds') if snap.get('scanner_heartbeat_age_seconds') is not None else '-'}",
+                f"Autotrader healthy: {snap.get('autotrader_healthy')}",
+                f"Autotrader age (s): {snap.get('autotrader_heartbeat_age_seconds') if snap.get('autotrader_heartbeat_age_seconds') is not None else '-'}",
+                f"Overall healthy: {snap.get('overall_healthy')}",
             ]
             _tg_send_message("<b>Bot status</b>\n" + "\n".join(_escape_html(x) for x in lines))
         elif text.startswith('/help'):

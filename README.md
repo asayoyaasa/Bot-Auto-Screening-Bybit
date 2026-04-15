@@ -105,7 +105,7 @@ Paper mode now supports:
 
 ### E. Testing foundation
 The upstream repo had no tests.
-This fork adds an initial test layer for paper-trading utility logic.
+This fork adds an initial test layer for paper-trading utility logic and a broader regression suite for execution, control, and scanner behavior.
 
 --------------------------------------------------
 ## 3. Differences from the Original Repository
@@ -410,6 +410,44 @@ source venv/bin/activate
 pip install -r requirements.txt
 cp config.example.json config.json
 ```
+
+### 7.1 Zero-Programming-Experience Quick Start
+If you have never used a terminal or edited a config file before, follow these steps exactly:
+
+1. Open a terminal in the project folder.
+2. Create the virtual environment:
+```bash
+python3 -m venv venv
+```
+3. Turn it on:
+```bash
+source venv/bin/activate
+```
+4. Install the required packages:
+```bash
+pip install -r requirements.txt
+```
+5. Make your personal config file:
+```bash
+cp config.example.json config.json
+```
+6. Open config.json in a text editor.
+7. Set execution.mode to paper first.
+8. Fill in the notification and database values you want to use.
+9. Save the file.
+10. Start the scanner in one terminal:
+```bash
+python main.py
+```
+11. Start execution in another terminal:
+```bash
+python auto_trades.py
+```
+12. Watch the logs folder for errors or health updates.
+
+Note:
+- If you are unsure what to change in config.json, keep paper mode on and only use test credentials until everything looks correct.
+- Do not switch to live mode until paper mode works for several hours without errors.
 
 --------------------------------------------------
 ## 8. Running the Bot

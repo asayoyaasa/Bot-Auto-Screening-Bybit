@@ -1,5 +1,5 @@
 [Unit]
-Description=Bybit Quant Bot V8.0 (Scanner)
+Description=Bybit Quant Bot (Scanner)
 After=network.target postgresql.service
 
 [Service]

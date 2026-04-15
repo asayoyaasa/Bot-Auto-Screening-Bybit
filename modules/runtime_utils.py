@@ -1,4 +1,3 @@
-import random
 import time
 
 import ccxt
@@ -19,6 +18,18 @@ def _is_idempotency_conflict(exc):
     if not text:
         text = str(exc).lower()
     return any(marker in text for marker in _IDEMPOTENCY_CONFLICT_MARKERS)
+
+
+def _is_fatal_ccxt_error(exc):
+    fatal_types = (ccxt.AuthenticationError, ccxt.PermissionDenied, ccxt.BadRequest, ccxt.InsufficientFunds)
+    for fatal_type in fatal_types:
+        if fatal_type is Exception or fatal_type is BaseException:
+            continue
+        if getattr(fatal_type, "__name__", fatal_type.__class__.__name__) in {"Exception", "BaseException"}:
+            continue
+        if isinstance(exc, fatal_type):
+            return True
+    return False
 
 
 def retry_call(
@@ -49,7 +60,7 @@ def retry_call(
             last_error = exc
 
             # Fail fast on non-transient ccxt errors
-            if isinstance(exc, (ccxt.AuthenticationError, ccxt.PermissionDenied, ccxt.BadRequest, ccxt.InsufficientFunds)):
+            if _is_fatal_ccxt_error(exc):
                 if logger:
                     logger.error(f"{context} FATAL non-transient error: {exc}")
                 raise exc
@@ -70,6 +81,6 @@ def retry_call(
                 logger.warning(msg)
             if attempt == retries:
                 break
-            delay = min(max_delay, base_delay * (2 ** (attempt - 1))) + random.uniform(0, 0.25)
+            delay = min(max_delay, base_delay * (2 ** (attempt - 1)))
             time.sleep(delay)
     raise last_error

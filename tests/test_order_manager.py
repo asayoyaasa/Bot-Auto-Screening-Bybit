@@ -14,6 +14,8 @@ class FakeExchange:
     def __init__(self):
         self.orders = []
         self.positions = []
+        self.open_orders = []
+        self.closed_orders = []
 
     def amount_to_precision(self, symbol, value):
         return f"{float(value):.4f}"
@@ -40,6 +42,15 @@ class FakeExchange:
     def fetch_position(self, symbol):
         return self.positions[0] if self.positions else {"contracts": 0}
 
+    def fetch_open_orders(self, symbol=None, limit=None):
+        return self.open_orders
+
+    def fetch_closed_orders(self, symbol=None, limit=None):
+        return self.closed_orders
+
+    def fetch_orders(self, symbol=None, limit=None):
+        return list(self.open_orders) + list(self.closed_orders)
+
 
 class FakeBybitHTTP:
     def __init__(self):
@@ -65,13 +76,22 @@ class Logger:
 
 
 def retry_call(func, *args, **kwargs):
+    resolve = kwargs.pop("resolve_idempotency_conflict", None)
+    idempotency_key = kwargs.pop("idempotency_key", None)
     kwargs.pop("retries", None)
     kwargs.pop("base_delay", None)
     kwargs.pop("logger", None)
     kwargs.pop("context", None)
-    kwargs.pop("idempotency_key", None)
-    kwargs.pop("resolve_idempotency_conflict", None)
-    return func(*args, **kwargs)
+    try:
+        return func(*args, **kwargs)
+    except Exception as exc:
+        text = " ".join(str(part) for part in getattr(exc, "args", ()) if part is not None).lower()
+        if idempotency_key is not None and any(marker in text for marker in ("already exists", "duplicate", "orderlinkid", "order link id", "client order id", "conflict")):
+            if callable(resolve):
+                resolved = resolve()
+                if resolved is not None:
+                    return resolved
+        raise
 
 
 def test_order_link_ids_are_idempotent_and_symbol_normalized():
@@ -147,6 +167,60 @@ def test_place_split_tps_without_trade_id_still_places_orders():
     assert ok is True
     assert len(exchange.orders) == 3
     assert all("orderLinkId" not in order["params"] for order in exchange.orders)
+
+
+def test_place_entry_order_resolves_existing_order_on_idempotency_conflict_without_duplicate_create():
+    exchange = FakeExchange()
+    exchange.open_orders = [{"id": "existing", "orderLinkId": "BTCUSDT:7:entry", "status": "open"}]
+    logger = Logger()
+    create_calls = {"count": 0}
+
+    def create_order(*args, **kwargs):
+        create_calls["count"] += 1
+        raise ValueError("OrderLinkId already exists")
+
+    result = place_entry_order(
+        exchange,
+        "BTC/USDT",
+        "long",
+        1.0,
+        100.0,
+        95.0,
+        101.0,
+        logger=logger,
+        retry_call=retry_call,
+        order_link_id="BTCUSDT:7:entry",
+        create_order=create_order,
+    )
+
+    assert create_calls["count"] == 1
+    assert result.response["id"] == "existing"
+    assert exchange.orders == []
+
+
+def test_place_split_tps_rejects_rounding_to_zero_quantities():
+    class TinyQtyExchange(FakeExchange):
+        def amount_to_precision(self, symbol, value):
+            return f"{float(value):.2f}"
+
+    exchange = TinyQtyExchange()
+    logger = Logger()
+
+    ok = place_split_tps(
+        exchange,
+        "BTC/USDT",
+        "long",
+        0.01,
+        110.0,
+        120.0,
+        130.0,
+        logger=logger,
+        retry_call=retry_call,
+        trade_id=1,
+    )
+
+    assert ok is False
+    assert exchange.orders == []
 
 
 def test_move_stop_to_entry_targets_matching_position_idx():

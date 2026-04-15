@@ -8,7 +8,7 @@ try:
 except Exception:  # pragma: no cover - fallback for minimal environments
     def given(*args, **kwargs):
         def decorator(fn):
-            return fn
+            return pytest.mark.parametrize("equity,risk_pct", [(1000.0, 1.0)])(fn)
         return decorator
 
     class _DummyStrategies:
@@ -18,14 +18,34 @@ except Exception:  # pragma: no cover - fallback for minimal environments
 
     st = _DummyStrategies()
 
+class _CCXTAuthenticationError(Exception):
+    pass
+
+
+class _CCXTPermissionDenied(Exception):
+    pass
+
+
+class _CCXTBadRequest(Exception):
+    pass
+
+
+class _CCXTInsufficientFunds(Exception):
+    pass
+
+
+class _CCXTNetworkError(Exception):
+    pass
+
+
 sys.modules.setdefault(
     "ccxt",
     types.SimpleNamespace(
-        AuthenticationError=Exception,
-        PermissionDenied=Exception,
-        BadRequest=Exception,
-        InsufficientFunds=Exception,
-        NetworkError=Exception,
+        AuthenticationError=_CCXTAuthenticationError,
+        PermissionDenied=_CCXTPermissionDenied,
+        BadRequest=_CCXTBadRequest,
+        InsufficientFunds=_CCXTInsufficientFunds,
+        NetworkError=_CCXTNetworkError,
     ),
 )
 

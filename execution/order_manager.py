@@ -25,25 +25,47 @@ def _extract_order_link_id(order: Mapping[str, Any] | None) -> str | None:
 
 
 def _resolve_order_by_link_id(exchange: Any, order_link_id: str, symbol: str | None = None) -> dict[str, Any] | None:
+    def _fetch_orders(method: Callable[..., Any]) -> list[dict[str, Any]] | None:
+        try:
+            orders = method(symbol, limit=ORDER_SEARCH_LIMIT) if symbol is not None else method(limit=ORDER_SEARCH_LIMIT)
+        except TypeError:
+            try:
+                orders = method(symbol, ORDER_SEARCH_LIMIT) if symbol is not None else method(ORDER_SEARCH_LIMIT)
+            except TypeError:
+                try:
+                    orders = method(symbol) if symbol is not None else method()
+                except Exception:
+                    return None
+            except Exception:
+                return None
+        except Exception:
+            return None
+        return orders if isinstance(orders, list) else None
+
     for method_name in ("fetch_open_orders", "fetch_closed_orders", "fetch_orders"):
         method = getattr(exchange, method_name, None)
         if not callable(method):
             continue
-        try:
-            orders = method(symbol, ORDER_SEARCH_LIMIT) if symbol is not None else method(ORDER_SEARCH_LIMIT)
-        except TypeError:
-            try:
-                orders = method(symbol) if symbol is not None else method()
-            except Exception:
-                continue
-        except Exception:
-            continue
-        if not isinstance(orders, list):
+        orders = _fetch_orders(method)
+        if not orders:
             continue
         for order in orders:
             if _extract_order_link_id(order) == order_link_id:
                 return order if isinstance(order, dict) else dict(order)
     return None
+
+
+def _rounded_tp_quantities(exchange: Any, symbol: str, total_qty: float) -> list[float]:
+    qty = validate_quantity(total_qty, field_name="total_qty")
+    raw_qtys = [qty * split for split in TP_SPLIT]
+    qtys = [float(exchange.amount_to_precision(symbol, item)) for item in raw_qtys]
+    current_sum = sum(qtys)
+    if abs(current_sum - qty) > 1e-8:
+        remainder = max(0.0, qty - qtys[0] - qtys[1])
+        qtys[2] = float(exchange.amount_to_precision(symbol, remainder))
+    if any(item <= 0 for item in qtys):
+        raise ValueError("rounded TP quantities must be positive")
+    return qtys
 
 
 @dataclass(frozen=True, slots=True)
@@ -112,15 +134,7 @@ def resolve_position_contracts(position: Mapping[str, Any] | None) -> float:
 
 
 def _build_tp_quantities(exchange: Any, symbol: str, total_qty: float) -> list[float]:
-    qty = validate_quantity(total_qty, field_name="total_qty")
-    raw_qtys = [qty * split for split in TP_SPLIT]
-    qtys = [float(exchange.amount_to_precision(symbol, item)) for item in raw_qtys]
-    current_sum = sum(qtys)
-    if abs(current_sum - qty) > 1e-8:
-        qtys[2] = float(exchange.amount_to_precision(symbol, max(0.0, qtys[2] + (qty - current_sum))))
-    if any(item <= 0 for item in qtys):
-        raise ValueError("rounded TP quantities must be positive")
-    return qtys
+    return _rounded_tp_quantities(exchange, symbol, total_qty)
 
 
 def place_split_tps(

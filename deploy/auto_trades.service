@@ -1,5 +1,5 @@
 [Unit]
-Description=Bybit Quant Bot V8.0 (Auto Trader)
+Description=Bybit Quant Bot (Auto Trader)
 After=network.target postgresql.service
 
 [Service]
