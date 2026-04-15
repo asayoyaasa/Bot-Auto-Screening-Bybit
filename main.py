@@ -15,7 +15,7 @@ from modules.quant import calculate_metrics, check_fakeout
 from modules.derivatives import analyze_derivatives
 from modules.smc import analyze_smc
 from modules.patterns import find_pattern
-from modules.discord_bot import send_alert, update_status_dashboard, run_fast_update, send_scan_completion
+from modules.telegram_bot import send_alert, update_status_dashboard, run_fast_update, send_scan_completion
 
 exchange = ccxt.bybit({'apiKey': CONFIG['api']['bybit_key'], 'secret': CONFIG['api']['bybit_secret'], 'options': {'defaultType': 'swap'}})
 
