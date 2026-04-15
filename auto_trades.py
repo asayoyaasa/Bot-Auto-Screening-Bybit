@@ -15,40 +15,26 @@ from modules.control import is_paused, update_heartbeat
 from modules.database import get_conn, release_conn
 from modules.logging_setup import build_component_logger
 from modules.notifications import send_event_message
+from modules.paper_trade_utils import (
+    apply_slippage,
+    build_paper_event_sequence,
+    gross_pnl_for_exit,
+    merge_paper_settings,
+    normalize_execution_mode,
+    normalize_side,
+    touch_triggered,
+    trade_fee,
+    validate_quantity,
+)
 from modules.runtime_utils import retry_call
 
 TARGET_LEVERAGE = 25
 RISK_PERCENT = 0.01
 MAX_POSITIONS = 40
 TP_SPLIT = [0.30, 0.30, 0.40]
-EXECUTION_MODE = str(CONFIG.get('execution', {}).get('mode', 'paper')).strip().lower()
+EXECUTION_MODE = normalize_execution_mode(CONFIG.get('execution', {}).get('mode', 'paper'))
 IS_PAPER = EXECUTION_MODE == 'paper'
 MODE_TAG = f"[{EXECUTION_MODE.upper()}]"
-DEFAULT_PAPER_SETTINGS = {
-    'initial_balance': 10000.0,
-    'fee_rate': 0.0006,
-    'slippage_bps': 5.0,
-    'fill_on_touch': True,
-    'conservative_intrabar': True,
-}
-
-
-def paper_settings():
-    cfg = CONFIG.get('execution', {}).get('paper', {})
-    merged = dict(DEFAULT_PAPER_SETTINGS)
-    if isinstance(cfg, dict):
-        merged.update(cfg)
-    merged['initial_balance'] = float(merged.get('initial_balance', DEFAULT_PAPER_SETTINGS['initial_balance']))
-    merged['fee_rate'] = float(merged.get('fee_rate', DEFAULT_PAPER_SETTINGS['fee_rate']))
-    merged['slippage_bps'] = float(merged.get('slippage_bps', DEFAULT_PAPER_SETTINGS['slippage_bps']))
-    merged['fill_on_touch'] = bool(merged.get('fill_on_touch', True))
-    merged['conservative_intrabar'] = bool(merged.get('conservative_intrabar', True))
-    return merged
-
-
-def slippage_multiplier(is_entry=True):
-    bps = paper_settings().get('slippage_bps', 0.0) / 10000.0
-    return 1.0 + bps if is_entry else 1.0 - bps
 
 logger = build_component_logger('AutoTrader', 'auto_trades.log', json_format=True, pii_mask=True)
 
@@ -197,36 +183,15 @@ def fetch_latest_candle(symbol, timeframe='1m'):
     }
 
 
-def trade_fee(notional):
-    return float(notional) * paper_settings().get('fee_rate', 0.0)
-
-
-def normalize_side(side):
-    return str(side).strip().lower()
-
-
-def apply_slippage(price, side, is_entry=True):
-    multiplier = slippage_multiplier(is_entry=is_entry)
-    side_norm = normalize_side(side)
-    if is_entry:
-        return float(price) * multiplier if side_norm == 'long' else float(price) * (2.0 - multiplier)
-    return float(price) * multiplier if side_norm == 'long' else float(price) * (2.0 - multiplier)
-
-
-def gross_pnl_for_exit(side, entry_price, exit_price, quantity):
-    if normalize_side(side) == 'long':
-        return (float(exit_price) - float(entry_price)) * float(quantity)
-    return (float(entry_price) - float(exit_price)) * float(quantity)
-
-
-def touch_triggered(side, low_price, high_price, target_price):
-    return float(low_price) <= float(target_price) <= float(high_price)
-
-
 def build_event_sequence(side, low_price, high_price, stop_loss, targets):
-    target_events = [(idx + 1, target) for idx, target in enumerate(targets) if touch_triggered(side, low_price, high_price, target)]
-    sl_hit = touch_triggered(side, low_price, high_price, stop_loss)
-    if sl_hit and target_events and paper_settings().get('conservative_intrabar', True):
+    _ = normalize_side(side)
+    target_events = [
+        (idx + 1, target)
+        for idx, target in enumerate(targets)
+        if touch_triggered(low_price, high_price, target)
+    ]
+    sl_hit = touch_triggered(low_price, high_price, stop_loss)
+    if sl_hit and target_events and merge_paper_settings(CONFIG.get('execution', {}).get('paper', {})).get('conservative_intrabar', True):
         return [('sl', stop_loss)]
     events = [('tp', idx, target) for idx, target in target_events]
     if sl_hit:

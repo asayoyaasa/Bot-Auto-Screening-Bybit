@@ -1,207 +1,541 @@
-# Bybit Quant Trading Bot v8.1.2
+# Bybit Quant Bot — Extended Fork with Paper Trading, Multi-Channel Alerts, and Safer Production Controls
 
-An institutional-grade, modular cryptocurrency trading bot designed for the Bybit Exchange. This bot leverages a hybrid analysis engine combining geometric pattern recognition, Smart Money Concepts (SMC), quantitative metrics (RVOL, OBI, VPIN), and derivative market data (CVD, Open Interest, Funding Rates) to identify high-probability setups.
+This repository is a heavily extended fork of the original Bot-Auto-Screening-Bybit project by hirazawa-yui99.
 
-It features a robust production architecture with PostgreSQL persistence, real-time Discord dashboards, and systemd integration.
+It keeps the original core idea:
+- scan Bybit markets
+- detect technical/pattern-based setups
+- persist trade state in PostgreSQL
+- alert the operator with rich signal output
 
-## 🚀 Key Features
+But this fork significantly expands the project in three major directions:
+1. notification flexibility
+2. safer production operation
+3. paper/live execution mode support
 
-### 🧠 Advanced Analysis Engine
-* **Smart Money Concepts (SMC):**
-  * **Order Blocks:** Identifies Bullish (Demand) and Bearish (Supply) zones. Skips trades entering opposing zones.
-  * **Market Structure:** Filters entries based on Higher Highs/Lows and Lower Highs/Lows.
-  * **Validation:** Detects Break of Structure (BOS) and Change of Character (CHoCH) for confirmation.
-* **Geometric Pattern Recognition:** Automatically detects Double Tops/Bottoms, Bull/Bear Flags, Ascending Triangles, and Rectangles.
-* **Market Context Awareness:**
-  * **BTC Bias Filter:** Uses Daily EMA 13/21 crosses to determine trend direction.
-  * **Trap Detection:** Identifies "Dead Cat Bounces" and "Bullish Exhaustion" (RSI > 75) to prevent bad entries.
-* **Divergence Logic:** Scans for Regular and Hidden divergences on Stochastic RSI and CVD (Cumulative Volume Delta).
+If you are reading this because you want to review changes for a future merge request, start with:
+- "Differences from the Original Repository"
+- "Architecture Changes in This Fork"
+- "Execution Modes"
+- "Notification System"
 
-### 🛡️ Risk Management & Quant Logic
-* **Dynamic Risk:Reward:** Calculates Entry, Stop Loss, and Take Profits (TP1-3) using Swing High/Low Fibonacci retracements.
-  * *Enforces a minimum Risk:Reward ratio (Configurable, default 1:3).*
-* **Fakeout Protection:** Rejects valid patterns if Relative Volume (RVOL) is below threshold (default 2.0).
-* **Z Score Integration:** Calculate Anomalies of the coin to get score.
-* **Derivative Filters:**
-  * Skips Longs if Funding Rate is overheated (> 0.02%).
-  * Analyzes Basis (Spot vs. Perp premium).
+--------------------------------------------------
+## 1. Upstream Reference
+Original repository:
+https://github.com/hirazawa-yui99/Bot-Auto-Screening-Bybit
 
-### ⚙️ Production Infrastructure
-* **Modular Architecture:** Split logic for maintainability (`technicals`, `derivatives`, `quant`, `patterns`, `smc`).
-* **Database Persistence:** Uses **PostgreSQL** to store trade history, prevent duplicate signals, and manage state.
-* **Discord Integration:**
-  * **Rich Alerts:** Sends chart screenshots with TP targets, detailed scoring explanations, and market bias.
-  * **Live Dashboard:** Auto-updating message showing active PnL and open positions.
-* **DevOps Ready:** Includes `systemd` service files and daily auto-restart scripts (Cron) for memory management.
+Original README title:
+- Bybit Quant Trading Bot v8.1.2
 
----
+Original project emphasized:
+- Bybit scanning
+- PostgreSQL persistence
+- Discord dashboards and webhooks
+- Smart Money Concepts + pattern detection + quant filters
+- production deployment via systemd/cron
 
-## 📂 Directory Structure
+This fork preserves the general strategy workflow while changing several operational and architectural pieces.
 
+--------------------------------------------------
+## 2. Project Structure and Responsibilities
+
+Core files:
+- `main.py` — market scanner entrypoint; loads markets, computes signals, writes trade rows
+- `auto_trades.py` — execution entrypoint; ingests signals, places orders, reconciles fills, manages paper/live lifecycle
+- `modules/config_loader.py` — config loading, validation, env overrides, execution mode enforcement
+- `modules/database.py` — PostgreSQL pool, schema migration, active-signal lookup
+- `modules/control.py` — pause/resume state, heartbeat tracking, health snapshot
+- `modules/notifications.py` — Telegram/Discord alerts and dashboard updates
+- `modules/logging_setup.py` — shared logging bootstrap and rotating file handlers
+- `modules/runtime_paths.py` — repo-root anchored path helpers
+- `modules/runtime_utils.py` — retry/backoff wrapper
+- `modules/paper_trade_utils.py` — paper-trade math, mode normalization, validation helpers
+- `modules/domain.py` — shared trade domain models (`TradeSignal`, `ActiveTrade`)
+- `modules/execution_types.py` — shared order/execution primitives (`OrderIntent`, `ExecutionEvent`)
+- `modules/technicals.py`, `modules/patterns.py`, `modules/smc.py`, `modules/quant.py`, `modules/derivatives.py` — strategy filters and scoring
+
+--------------------------------------------------
+## 3. What This Fork Adds
+This fork adds or changes all of the following:
+
+### A. Notification flexibility
+- Telegram support added
+- Discord support retained
+- user can choose:
+  - Telegram only
+  - Discord only
+  - both Telegram and Discord
+- Telegram control commands added:
+  - /status
+  - /pause
+  - /resume
+  - /help
+
+### B. Safer production behavior
+- config validation improved
+- retry/backoff support added around network operations
+- rotating log files added
+- status/heartbeat tracking added
+- file-based health snapshot added
+- Discord dashboard changed from repeated spam posts to message editing behavior
+- dashboard/status counts improved
+
+### C. Execution mode support
+- explicit execution modes:
+  - paper
+  - live
+- paper mode supports local simulated trading lifecycle
+- live mode keeps real Bybit execution path
+- all alerts/dashboard/status outputs are mode-labeled:
+  - [PAPER]
+  - [LIVE]
+
+### D. Paper trading engine
+Paper mode now supports:
+- signal ingestion
+- virtual order queueing
+- simulated entry fills
+- TP1 / TP2 / TP3 partial exits
+- stop-loss exits
+- breakeven stop move after TP1
+- fee modeling
+- slippage modeling
+- paper equity tracking
+- mode-aware reporting
+
+### E. Testing foundation
+The upstream repo had no tests.
+This fork adds an initial test layer for paper-trading utility logic.
+
+--------------------------------------------------
+## 3. Differences from the Original Repository
+This section is intentionally explicit to help future code review / merge discussion.
+
+### 3.1 Notification System — Original vs Fork
+Original:
+- Discord-centric
+- Discord webhook workflow was the primary alerting path
+- Discord dashboard was part of the design
+
+This fork:
+- replaces single-channel assumptions with a shared notification layer
+- supports Telegram and Discord simultaneously
+- keeps Discord as an option instead of removing it
+- adds Telegram operational control commands
+- unifies alert formatting through a centralized module
+
+Files involved:
+- modules/notifications.py
+- modules/telegram_bot.py
+- modules/discord_bot.py
+- modules/control.py
+
+Practical difference:
+- operator no longer has to depend only on Discord
+- can run the bot in Telegram-only workflows
+- can still keep Discord for team visibility if desired
+
+### 3.2 Dashboard Behavior — Original vs Fork
+Original:
+- dashboard behavior was Discord-focused
+- repeated dashboard posting behavior was part of the older webhook-oriented flow
+
+This fork:
+- dashboard is mode-aware
+- dashboard message editing is supported for Telegram
+- Discord dashboard behavior was improved to edit a tracked message instead of spamming new messages continuously
+- dashboard now clearly labels mode:
+  - [PAPER] DASHBOARD
+  - [LIVE] DASHBOARD
+
+### 3.3 Execution Architecture — Original vs Fork
+Original:
+- primarily live-trading oriented
+- assumed real exchange-side execution / monitoring behavior
+- no proper paper-trading mode
+
+This fork:
+- introduces explicit execution mode handling
+- separates live and paper behavior logically
+- allows the full bot to be run without sending live orders
+- paper mode now simulates position lifecycle using market data and local DB state
+
+This is one of the biggest architectural changes in the fork.
+
+## Deployment Checklist (Production & Paper)
+To deploy this bot safely and correctly, ensure the following steps are met before mainnet activation:
+
+1. **Vault Setup**: Store API keys in a secure vault (e.g., HashiCorp Vault, AWS KMS) or OS-level keychain. Never commit `.env` or `config.json`.
+2. **Env-Var Template**: Use `config.example.json` as a structural guide. Load credentials exclusively at runtime via environment variables (`BOT_ENV`, `BYBIT_KEY`, `BYBIT_SECRET`, `TELEGRAM_TOKEN`, etc.).
+3. **Docker Image Build**: 
+   - `docker build -t bybit-bot:latest .`
+   - Verify the checksum before deploying.
+4. **Step-by-Step Validation (Testnet/Paper)**:
+   - Run the bot with `execution.mode` set to `paper`.
+   - Connect to Bybit Testnet using test API keys (set `testnet=True` in `pybit` / `ccxt`).
+   - Run a simulated 24-hour loop and assert order state transitions within 5s.
+   - Once metrics pass, toggle to `live` execution for mainnet.
+
+### 3.4 Safer Operational Controls — Original vs Fork
+Original:
+- production-oriented, but with fewer guardrails around notification flexibility and runtime monitoring
+
+This fork adds:
+- stronger config validation
+- retry/backoff helper usage
+- rotating logs
+- heartbeat tracking
+- pause/resume state tracking
+- file-based health snapshot at:
+  - logs/health_status.json
+- mode-aware /status control output
+
+### 3.5 Status Lifecycle Tracking — Original vs Fork
+Original:
+- trade lifecycle tracking existed, but was more loosely tied to live execution flow and notification flow
+
+This fork standardizes signal lifecycle more explicitly with states like:
+- Waiting Entry
+- Queued
+- Order Placed
+- Active
+- Closed
+- Cancelled
+
+This improves:
+- deduplication
+- dashboard output
+- reporting clarity
+- mode-aware filtering
+
+### 3.6 Database Usage — Original vs Fork
+Original:
+- PostgreSQL-backed trade persistence
+- schema migration behavior existed
+
+This fork keeps PostgreSQL but extends schema usage for:
+- execution_mode on trades
+- execution_mode on active_trades
+- paper-trading bookkeeping fields such as:
+  - remaining_quantity
+  - filled_quantity
+  - entry_fill_price
+  - exit_fill_price
+  - realized_fees
+  - realized_pnl_gross
+  - realized_pnl_net
+  - tp1_hit / tp2_hit / tp3_hit
+- daily_reports now also track execution mode
+
+This makes live and paper reporting coexist more safely.
+
+### 3.7 Testing — Original vs Fork
+Original:
+- no automated test suite included
+
+This fork:
+- adds tests/ directory
+- adds initial paper utility tests
+- adds domain/execution primitive tests
+- verifies:
+  - settings merge behavior
+  - conservative ambiguous-candle logic
+  - slippage behavior
+  - fee math
+  - gross pnl math
+  - config validation and live-mode safety checks
+  - schema migration idempotence
+  - execution state machine behavior
+  - shared domain/execution model validation
+
+This is not yet a full suite, but it is a meaningful improvement over no tests at all.
+
+--------------------------------------------------
+## 4. Current Feature Set in This Fork
+
+### Market Analysis
+The fork still keeps the original style of analysis stack:
+- pattern-based signal generation
+- derivatives filtering
+- quant scoring
+- SMC support
+- BTC bias filtering
+- fakeout protection
+- risk/reward filtering
+
+Main related modules:
+- modules/patterns.py
+- modules/quant.py
+- modules/derivatives.py
+- modules/smc.py
+- modules/technicals.py
+- main.py
+
+### Notifications
+Supported notification modes:
+- Telegram only
+- Discord only
+- Telegram + Discord
+
+Features:
+- rich signal alerts
+- chart image alerts
+- scan completion alerts
+- trade lifecycle alerts
+- dashboard updates
+
+### Telegram Controls
+Supported commands:
+- /status
+- /pause [reason]
+- /resume
+- /help
+
+### Execution Modes
+Supported:
+- paper
+- live
+
+### Reporting
+- PostgreSQL-backed trade and active-trade persistence
+- daily reports
+- mode-aware paper/live filtering
+- paper equity tracking
+
+### Logging and Monitoring
+- logs/scanner.log
+- logs/auto_trades.log
+- logs/health_status.json
+
+--------------------------------------------------
+## 5. Repository Structure
 ```text
-/bybit_bot_v8
-├── config.json             # Main configuration (Strategy, API, Webhooks)
-├── .env                    # Environment variables (DB Creds, Secrets)
-├── main.py                 # Core Orchestrator
-├── requirements.txt        # Python Dependencies
-├── /modules
-│   ├── config_loader.py    # Environment handling (Prod/Test)
-│   ├── database.py         # Connection pooling & Schema migration
-│   ├── technicals.py       # Indicators & Divergence logic
-│   ├── derivatives.py      # Funding, Basis, CVD analysis
-│   ├── smc.py              # NEW: Order Blocks, Structure, Liquidity
-│   ├── quant.py            # RVOL, OBI, Fakeout logic
-│   ├── patterns.py         # Pattern recognition algorithms
-│   └── discord_bot.py      # Chart generation & Alerting
-└── /deploy
-    ├── bot.service         # Systemd service file
-    └── restart_bot.sh      # Cron restart script
+Bot-Auto-Screening-Bybit/
+├── main.py                         # scanner / signal generation loop
+├── auto_trades.py                  # execution engine (paper + live)
+├── config.example.json
+├── requirements.txt
+├── README.md
+├── tests/
+│   ├── conftest.py
+│   └── test_paper_trade_utils.py
+├── modules/
+│   ├── config_loader.py            # config loading + validation
+│   ├── control.py                  # pause/heartbeat/status/health snapshot
+│   ├── database.py                 # DB init + schema migration
+│   ├── notifications.py            # unified Telegram + Discord notifications
+│   ├── telegram_bot.py             # compatibility re-export
+│   ├── discord_bot.py              # compatibility re-export
+│   ├── runtime_utils.py            # retry/backoff helper
+│   ├── paper_trade_utils.py        # tested paper-trading utility logic
+│   ├── technicals.py
+│   ├── quant.py
+│   ├── derivatives.py
+│   ├── smc.py
+│   └── patterns.py
+└── deploy/
+    ├── bot.service
+    └── auto_trades.service
 ```
-## 🛠️ Installation & Setup
 
-### 1. Prerequisites
-* **Python 3.8+**
-* **PostgreSQL Database**
-* **Bybit API Keys** (Permissions: Read-Write for Orders/Positions)
-* **Discord Webhook URLs**
+--------------------------------------------------
+## 6. Configuration
+Copy config.example.json to config.json and edit it.
 
-### 2. Clone & Install
-```bash
-# Clone the repository
-git clone [https://github.com/yourusername/bybit_bot_v8.git](https://github.com/yourusername/bybit_bot_v8.git)
-cd bybit_bot_v8
-
-# Create and activate a virtual environment
-python3 -m venv venv
-source venv/bin/activate
-
-# Install dependencies
-pip install -r requirements.txt
-```
-### 3. Database Setup
-The bot requires a PostgreSQL database to store trade history and manage state.
-
-**1. Access the PostgreSQL prompt:**
-```bash
-sudo -u postgres psql
-```
-### 4. Configuration
-Create a `config.json` file in the root directory. This controls your strategy, risk settings, and API keys.
-
-**Copy and paste this template:**
+### 6.1 Notifications
+Example:
 ```json
-{
-    "api": {
-        "discord_webhook": "[https://discord.com/api/webhooks/YOUR_WEBHOOK_URL](https://discord.com/api/webhooks/YOUR_WEBHOOK_URL)",
-        "discord_live_webhook": "[https://discord.com/api/webhooks/YOUR_LIVE_WEBHOOK_URL](https://discord.com/api/webhooks/YOUR_LIVE_WEBHOOK_URL)",
-        "discord_dashboard_webhook": "[https://discord.com/api/webhooks/YOUR_DASHBOARD_WEBHOOK_URL](https://discord.com/api/webhooks/YOUR_DASHBOARD_WEBHOOK_URL)",
-        "bybit_key": "YOUR_BYBIT_API_KEY",
-        "bybit_secret": "YOUR_BYBIT_API_SECRET",
-        "discord_server_id": "YOUR_DISCORD_SERVER_ID",
-        "discord_role_id": "YOUR_DISCORD_ROLE_ID_TO_MENTION"
-    },
-    "database": {
-        "host": "localhost",
-        "database": "bybit_bot",
-        "user": "postgres",
-        "password": "",
-        "port": "5432"
-    },
-    "system": {
-        "timezone": "Asia/Jakarta",
-        "max_threads": 20,
-        "check_interval_hours": 1,
-        "timeframes": ["1h", "4h", "1d", "1w"]
-    },
-    "setup": {
-        "fib_entry_start": 0.5,
-        "fib_entry_end": 0.618,
-        "fib_sl": 0.27,
-        "fib_tp_1": 1.0,
-        "fib_tp_2": 1.618,
-        "fib_tp_3": 2.618
-    },
-    "strategy": {
-        "min_tech_score": 5,
-        "min_quant_score": 3,
-        "risk_reward_min": 3.0
-    },
-    "indicators": {
-        "min_rvol": 2.0
-    },
-    "patterns": {
-        "double_top": true,
-        "double_bottom": true,
-        "bull_flag": true,
-        "bear_flag": true,
-        "ascending_triangle": true,
-        "bullish_rectangle": true
-    },
-    "pattern_signals": {
-        "double_bottom": "Long",
-        "double_top": "Short",
-        "bull_flag": "Long",
-        "bear_flag": "Short",
-        "ascending_triangle": "Long",
-        "bullish_rectangle": "Long"
-    }
+"notifications": {
+  "telegram_enabled": true,
+  "discord_enabled": false,
+  "telegram_control_enabled": true
 }
 ```
 
-## 🚀 Deployment (Linux/Systemd)
+If Telegram is enabled, set:
+- api.telegram_bot_token
+- api.telegram_chat_id
 
-### 1. Setup Service
-This allows the bot to run in the background and automatically restart if it crashes or the server reboots.
+If Discord is enabled, set:
+- api.discord_webhook
 
+### 6.2 Execution Mode
+Example:
+```json
+"execution": {
+  "mode": "paper",
+  "paper": {
+    "initial_balance": 10000,
+    "fee_rate": 0.0006,
+    "slippage_bps": 5,
+    "fill_on_touch": true,
+    "conservative_intrabar": true
+  }
+}
+```
+
+Supported values:
+- paper
+- live
+
+Meaning:
+- paper = local simulation, no live exchange order placement
+- live = real Bybit execution path
+
+### 6.3 Paper Settings
+- initial_balance
+  - starting paper equity used in reporting
+- fee_rate
+  - fee fraction applied on entry and exit
+  - example: 0.0006 = 0.06%
+- slippage_bps
+  - adverse slippage in basis points
+- fill_on_touch
+  - whether touching entry price fills the virtual order
+- conservative_intrabar
+  - if one candle touches both TP and SL, prefer the worse outcome
+
+### 6.4 Live Mode Requirements
+Live mode requires:
+- api.bybit_key
+- api.bybit_secret
+
+Paper mode does not require live credentials to run the execution engine logic.
+
+--------------------------------------------------
+## 7. Installation
 ```bash
-# Copy the service file to the systemd directory
-sudo cp deploy/bot.service /etc/systemd/system/bybit_bot.service
+python3 -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
+cp config.example.json config.json
+```
 
-# Reload the systemd daemon to recognize the new service
+--------------------------------------------------
+## 8. Running the Bot
+### Scanner
+```bash
+source venv/bin/activate
+python main.py
+```
+
+### Execution Engine
+```bash
+source venv/bin/activate
+python auto_trades.py
+```
+
+Recommended:
+- start in paper mode first
+- verify alerts, dashboard, and reporting
+- only switch to live after validating behavior
+
+--------------------------------------------------
+## 9. systemd Deployment
+Create a dedicated user first:
+```bash
+sudo useradd --system --home /opt/Bot-Auto-Screening-Bybit --shell /usr/sbin/nologin bybitbot
+sudo chown -R bybitbot:bybitbot /opt/Bot-Auto-Screening-Bybit
+```
+
+Install services:
+```bash
+sudo cp deploy/bot.service /etc/systemd/system/bybit-bot.service
+sudo cp deploy/auto_trades.service /etc/systemd/system/bybit-auto-trades.service
 sudo systemctl daemon-reload
-
-# Enable the service to start on boot
-sudo systemctl enable bybit_bot
-
-# Start the bot immediately
-sudo systemctl start bybit_bot
-
-# Check the status to ensure it's running
-sudo systemctl status bybit_bot
+sudo systemctl enable bybit-bot bybit-auto-trades
+sudo systemctl start bybit-bot bybit-auto-trades
 ```
-### 2. Setup Daily Restart (Cron)
-To keep the bot fresh and clear memory, set up a daily restart at 00:00.
 
-Bash
+--------------------------------------------------
+## 10. Logs and Health Files
+Logs:
+- logs/scanner.log
+- logs/auto_trades.log
 
-# Open the crontab editor
-crontab -e
+Health snapshot:
+- logs/health_status.json
 
-# Add the following line at the bottom of the file:
-```
-0 0 * * * /opt/bybit_bot_v8/deploy/restart_bot.sh
-```
-## 📊 Logic Overview
+The health file includes:
+- current mode
+- paused state
+- active signals count
+- active positions count
+- scanner heartbeat
+- autotrader heartbeat
+- overall healthy flag
 
-### Scoring System
-The bot assigns a score to every potential trade. A setup must meet the `min_tech_score` (default 5) to trigger.
+--------------------------------------------------
+## 11. How Paper Mode Works in This Fork
+Paper mode is not just “skip order placement.”
+It is a local simulated execution engine.
 
-* **Base Score:** 3 points (Valid Pattern Found).
-* **Technicals:** +/- 2 for Stochastic Divergence.
-* **Quant:** +1 for Nuclear RVOL (>5.0), +1 for OBI Imbalance.
-* **Derivatives:** +1 for Cool Funding, +/- 2 for CVD Divergence.
-* **Context:** +1 if setup aligns with BTC Daily Bias.
+Current paper lifecycle:
+1. signal is generated
+2. signal is stored in trades
+3. autotrader ingests signal into active_trades
+4. virtual order is queued
+5. entry is filled when price touches entry criteria
+6. TP1 / TP2 / TP3 are processed with partial exits
+7. stop loss can close remaining size
+8. TP1 can move stop to breakeven
+9. fees and slippage are applied
+10. realized net PnL updates paper equity and reports
 
-### Trade Lifecycle
-1.  **Scan:** Multithreaded scan of top 400 pairs on Bybit.
-2.  **Filter:** Checks BTC Bias, "ST" tags, and Fakeout logic.
-3.  **Validate:** Calculates Risk:Reward. If < 3.0, trade is dropped.
-4.  **Alert:** Sends chart and details to Discord.
-5.  **Track:** Inserts into DB as `Waiting Entry`.
-6.  **Monitor:** `run_fast_update` runs every minute to check if Entry/TP/SL is hit.
-7.  **Update:** Updates Discord Dashboard in real-time.
+Important caveat:
+- paper mode is candle-driven, not tick-driven
+- conservative intrabar logic is used to reduce optimistic results
 
----
+--------------------------------------------------
+## 12. Merge-Oriented Summary of Changes
+If preparing a future merge request against upstream, the major review buckets are:
 
-## ⚠️ Disclaimer
-This software is for educational purposes only. Cryptocurrency trading involves significant risk. The authors are not responsible for any financial losses incurred while using this bot. Use at your own risk.
+### Bucket 1: Multi-channel notifications
+- Telegram support added
+- Discord retained
+- unified notification module introduced
+- Telegram control commands introduced
+
+### Bucket 2: Execution architecture
+- explicit paper/live modes added
+- paper execution engine implemented
+- live flow preserved
+
+### Bucket 3: Production hardening
+- config validation improved
+- retry/backoff helpers used
+- rotating logs added
+- health snapshot added
+- dashboard behavior improved
+
+### Bucket 4: Database/state management
+- execution_mode tracking added
+- paper-specific trade bookkeeping fields added
+- reporting made mode-aware
+- signal lifecycle made more explicit
+
+### Bucket 5: Testability
+- tests directory added
+- utility-level paper trading tests added
+- paper utility logic extracted into a dedicated module
+
+--------------------------------------------------
+## 13. Known Remaining Gaps / Future Work
+This fork is much more capable than upstream operationally, but it is not “finished forever.”
+
+Still recommended for future work:
+- end-to-end tests for DB-backed paper lifecycle
+- explicit /positions command
+- explicit /pnl command
+- startup self-check output for mode / DB / notification readiness
+- cleaner removal of legacy bridge use of order_id as a temporary mode marker
+- more advanced intrabar execution modeling if needed
+
+--------------------------------------------------
+## 14. Disclaimer
+This software is for educational and operational experimentation purposes only.
+Cryptocurrency trading carries substantial financial risk.
+
+Paper mode is only a simulation.
+Live mode can place real exchange orders.
+Always verify your configuration and execution mode before running in production.

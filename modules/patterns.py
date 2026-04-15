@@ -1,11 +1,18 @@
+import logging
+
 import numpy as np
 from scipy.signal import argrelextrema
 from scipy.stats import linregress
 from modules.config_loader import CONFIG
 
+logger = logging.getLogger(__name__)
+
 def get_slope(values):
-    try: return linregress(np.arange(len(values)), values)[0]
-    except: return 0.0
+    try:
+        return linregress(np.arange(len(values)), values)[0]
+    except Exception as exc:
+        logger.debug(f"patterns.get_slope fallback used: {exc}")
+        return 0.0
 
 def check_alignment(values):
     if len(values) < 2: return False

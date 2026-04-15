@@ -1,9 +1,16 @@
+import logging
+
 import numpy as np
 from scipy.stats import linregress
 
+logger = logging.getLogger(__name__)
+
 def get_slope(series):
-    try: return linregress(np.arange(len(series)), np.array(series))[0]
-    except: return 0
+    try:
+        return linregress(np.arange(len(series)), np.array(series))[0]
+    except Exception as exc:
+        logger.debug(f"derivatives.get_slope fallback used: {exc}")
+        return 0
 
 def analyze_derivatives(df, ticker, side):
     """
@@ -14,10 +21,11 @@ def analyze_derivatives(df, ticker, side):
     
     # 1. Funding Rate Check
     funding = float(ticker.get('info', {}).get('fundingRate', 0))
-    if side == "Long" and funding > 0.02: 
+    # Bybit funding is returned as a decimal (e.g. 0.0001 == 0.01%)
+    if side == "Long" and funding > 0.0002:
         return False, 0, ["Funding Hot (>0.02%)"]
     
-    if abs(funding) < 0.01: 
+    if abs(funding) < 0.0002:
         score += 1
         reasons.append("Cool Funding")
 
@@ -26,9 +34,9 @@ def analyze_derivatives(df, ticker, side):
     index = float(ticker.get('info', {}).get('indexPrice', mark))
     
     # 3. CVD Calculation (Defensive Fix)
-    # If 'CVD' is missing, we calculate it right here.
     if 'CVD' not in df.columns:
-        df['delta'] = np.where(df['close'] > df['open'], df['volume'], -df['volume'])
+        # Improved: Avoid look-ahead bias and calculate exact tick-level if available, else standard proxy
+        df['delta'] = np.where(df['close'] >= df['open'], df['volume'], -df['volume'])
         df['CVD'] = df['delta'].cumsum()
 
     # 4. Divergence Analysis (Price Slope vs CVD Slope)

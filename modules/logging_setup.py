@@ -63,7 +63,10 @@ def setup_root_logging(level=logging.INFO):
 
 def _make_file_formatter(json_format=False):
     if json_format and jsonlogger is not None:
-        return jsonlogger.JsonFormatter('%(asctime)s %(levelname)s %(name)s %(message)s', rename_fields={'asctime': 'timestamp'})
+        try:
+            return jsonlogger.JsonFormatter('%(asctime)s %(levelname)s %(name)s %(message)s', rename_fields={'asctime': 'timestamp'})
+        except Exception:
+            return JsonFallbackFormatter()
     if json_format:
         return JsonFallbackFormatter()
     return logging.Formatter('%(asctime)s - %(levelname)s - %(message)s', datefmt='%H:%M:%S')

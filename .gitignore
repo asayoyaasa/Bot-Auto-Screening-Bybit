@@ -1,4 +1,6 @@
 .env
 config.json
 bot_env/*
+logs/*
+*.png
 *__pycache__/*

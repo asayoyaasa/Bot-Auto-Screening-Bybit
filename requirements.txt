@@ -8,3 +8,6 @@ mplfinance
 psycopg2-binary
 scipy
 python-dotenv
+pybit
+python-json-logger
+hypothesis

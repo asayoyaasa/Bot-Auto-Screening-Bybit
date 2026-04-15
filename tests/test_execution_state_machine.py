@@ -100,7 +100,15 @@ def _install_import_stubs(monkeypatch):
     monkeypatch.setitem(sys.modules, "scipy", types.SimpleNamespace())
     monkeypatch.setitem(sys.modules, "scipy.stats", types.SimpleNamespace(linregress=lambda *a, **k: (0, 0, 0, 0, 0)))
     monkeypatch.setitem(sys.modules, "scipy.signal", types.SimpleNamespace(argrelextrema=lambda *a, **k: ([],)))
-    pybit_unified = types.SimpleNamespace(HTTP=object, WebSocket=object)
+    class DummyHTTP:
+        def __init__(self, *args, **kwargs):
+            pass
+
+    class DummyWebSocket:
+        def __init__(self, *args, **kwargs):
+            pass
+
+    pybit_unified = types.SimpleNamespace(HTTP=DummyHTTP, WebSocket=DummyWebSocket)
     monkeypatch.setitem(sys.modules, "pybit", types.SimpleNamespace(unified_trading=pybit_unified))
     monkeypatch.setitem(sys.modules, "pybit.unified_trading", pybit_unified)
     monkeypatch.setitem(sys.modules, "pythonjsonlogger", types.SimpleNamespace(jsonlogger=types.SimpleNamespace(JsonFormatter=object)))

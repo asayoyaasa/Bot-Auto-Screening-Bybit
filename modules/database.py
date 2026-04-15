@@ -5,6 +5,7 @@ from psycopg2 import pool
 
 from modules.config_loader import CONFIG
 from modules.logging_setup import build_component_logger
+from modules.paper_trade_utils import normalize_execution_mode
 
 DB_POOL = None
 ACTIVE_SIGNAL_STATUSES = ('Waiting Entry', 'Queued', 'Order Placed', 'Active')
@@ -125,7 +126,7 @@ def get_active_signals():
     conn = get_conn()
     try:
         cur = conn.cursor()
-        current_mode = str(CONFIG.get('execution', {}).get('mode', 'paper')).strip().lower()
+        current_mode = normalize_execution_mode(CONFIG.get('execution', {}).get('mode', 'paper'))
         cur.execute(
             """
             SELECT symbol, timeframe

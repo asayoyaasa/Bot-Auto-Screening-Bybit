@@ -1,5 +1,5 @@
 [Unit]
-Description=Bybit Quant Bot V8.0 (Scanner)
+Description=Bybit Quant Bot V8.0 (Auto Trader)
 After=network.target postgresql.service
 
 [Service]
@@ -7,7 +7,7 @@ Type=simple
 User=bybitbot
 Group=bybitbot
 WorkingDirectory=/opt/Bot-Auto-Screening-Bybit
-ExecStart=/opt/Bot-Auto-Screening-Bybit/venv/bin/python main.py
+ExecStart=/opt/Bot-Auto-Screening-Bybit/venv/bin/python auto_trades.py
 Restart=always
 RestartSec=5
 Environment="BOT_ENV=production"
