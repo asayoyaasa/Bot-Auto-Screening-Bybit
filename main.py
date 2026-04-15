@@ -1,179 +1,220 @@
 import ccxt
-import time
-import schedule
-import random
+import logging
 import os
+import random
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
 import pandas as pd
 import pandas_ta as ta
-import numpy as np
-import traceback
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from modules.config_loader import CONFIG
-from modules.database import init_db, get_active_signals
-from modules.technicals import get_technicals, detect_divergence
-from modules.quant import calculate_metrics, check_fakeout
-from modules.derivatives import analyze_derivatives
-from modules.smc import analyze_smc
-from modules.patterns import find_pattern
-from modules.telegram_bot import send_alert, update_status_dashboard, run_fast_update, send_scan_completion
+import schedule
 
-exchange = ccxt.bybit({'apiKey': CONFIG['api']['bybit_key'], 'secret': CONFIG['api']['bybit_secret'], 'options': {'defaultType': 'swap'}})
+from modules.config_loader import CONFIG
+from modules.control import is_paused, update_heartbeat
+from modules.logging_setup import build_component_logger
+
+from modules.derivatives import analyze_derivatives
+from modules.notifications import send_alert, run_fast_update, send_scan_completion
+from modules.patterns import find_pattern
+from modules.quant import calculate_metrics, check_fakeout
+from modules.runtime_utils import retry_call
+from modules.smc import analyze_smc
+from modules.technicals import detect_divergence, get_technicals
+
+logger = build_component_logger('Scanner', 'scanner.log')
+EXECUTION_MODE = str(CONFIG.get('execution', {}).get('mode', 'paper')).strip().lower()
+MODE_TAG = f"[{EXECUTION_MODE.upper()}]"
+
+exchange = ccxt.bybit({
+    'apiKey': CONFIG['api']['bybit_key'],
+    'secret': CONFIG['api']['bybit_secret'],
+    'options': {'defaultType': 'swap', 'adjustForTimeDifference': True},
+    'enableRateLimit': True,
+})
+
+
+def ex_call(method_name, *args, context="", **kwargs):
+    method = getattr(exchange, method_name)
+    return retry_call(method, *args, retries=3, base_delay=1.0, logger=logger, context=context or method_name, **kwargs)
+
 
 def get_btc_bias():
     try:
-        bars = exchange.fetch_ohlcv('BTC/USDT', '1d', limit=100)
-        if not bars: return "Sideways"
-        df = pd.DataFrame(bars, columns=['t','o','h','l','c','v'])
+        bars = ex_call('fetch_ohlcv', 'BTC/USDT', '1d', limit=100, context='fetch BTC bias candles')
+        if not bars:
+            return "Sideways"
+        df = pd.DataFrame(bars, columns=['t', 'o', 'h', 'l', 'c', 'v'])
         df['ema13'] = ta.ema(df['c'], length=13)
         df['ema21'] = ta.ema(df['c'], length=21)
         curr = df.iloc[-1]
         return "Bullish" if curr['ema13'] > curr['ema21'] else "Bearish"
-    except: return "Sideways"
+    except Exception as e:
+        logger.warning(f"Failed to compute BTC bias: {e}")
+        return "Sideways"
+
 
 def calculate_rr(entry, sl, tp3):
-    if entry <= 0 or sl <= 0 or tp3 <= 0: return 0.0
+    if entry <= 0 or sl <= 0 or tp3 <= 0:
+        return 0.0
     risk = abs(entry - sl)
     return round(abs(tp3 - entry) / risk, 2) if risk > 0 else 0.0
 
+
 def analyze_ticker(symbol, timeframe, btc_bias, active_signals):
-    # 1. DUPLICATE CHECK
-    if (symbol, timeframe) in active_signals: return None
-    
+    if (symbol, timeframe) in active_signals:
+        return None
+
     try:
-        ticker_info = exchange.fetch_ticker(symbol)
-        if "ST" in ticker_info.get('info', {}).get('symbol', ''): return None
-        
+        ticker_info = ex_call('fetch_ticker', symbol, context=f'fetch ticker {symbol}')
+        if "ST" in ticker_info.get('info', {}).get('symbol', ''):
+            return None
+
         min_candles = CONFIG['system'].get('min_candles_analysis', 150)
-        bars = exchange.fetch_ohlcv(symbol, timeframe, limit=min_candles + 50)
-        if not bars or len(bars) < min_candles: return None
-            
-        df = pd.DataFrame(bars, columns=['timestamp','open','high','low','close','volume'])
+        bars = ex_call('fetch_ohlcv', symbol, timeframe, limit=min_candles + 50, context=f'fetch candles {symbol} {timeframe}')
+        if not bars or len(bars) < min_candles:
+            return None
+
+        df = pd.DataFrame(bars, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
         df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
-        
-        # 2. Technicals & Pattern
         df = get_technicals(df)
         pattern = find_pattern(df)
-        if not pattern: return None
+        if not pattern:
+            return None
+
         side = CONFIG['pattern_signals'].get(pattern)
-        
-        # 3. SMC Analysis (Optional Filter)
+        if not side:
+            logger.warning(f"Pattern {pattern} has no configured side")
+            return None
+
         valid_smc, smc_score, smc_reasons = analyze_smc(df, side)
         if smc_score < CONFIG['strategy'].get('min_smc_score', 0):
-            # print(f"❌ {symbol} rejected: SMC Score too low ({smc_score})")
             return None
-        # if not valid_smc: return None  # Un-comment for strict SMC
+        if not valid_smc and CONFIG['strategy'].get('require_valid_smc', False):
+            return None
 
-        # 4. Quant & Deriv Metrics
         df, basis, z_score, zeta_score, obi, quant_score, quant_reasons = calculate_metrics(df, ticker_info)
         valid_deriv, deriv_score, deriv_reasons = analyze_derivatives(df, ticker_info, side)
-        if not valid_deriv: return None
-
-        if deriv_score < CONFIG['strategy'].get('min_deriv_score', 0):
-            # print(f"❌ {symbol} rejected: Deriv Score too low ({deriv_score})")
+        if not valid_deriv:
             return None
-        
-        # 5. Scores & Bias
+        if deriv_score < CONFIG['strategy'].get('min_deriv_score', 0):
+            return None
+
         div_score, div_msg = detect_divergence(df)
         tech_score = 3 + div_score
         tech_reasons = [f"Pattern: {pattern}", div_msg] + smc_reasons
 
-        total_score = tech_score + smc_score + quant_score + deriv_score
-        
-        if "Bearish" in btc_bias and side == "Long": return None
-        if "Bullish" in btc_bias and side == "Short": return None
-        
-        valid_fo, fo_msg = check_fakeout(df, CONFIG['indicators']['min_rvol'])
-        if not valid_fo: return None
+        if "Bearish" in btc_bias and side == "Long":
+            return None
+        if "Bullish" in btc_bias and side == "Short":
+            return None
 
-        if tech_score < CONFIG['strategy']['min_tech_score']: return None
+        valid_fo, _ = check_fakeout(df, CONFIG['indicators']['min_rvol'])
+        if not valid_fo:
+            return None
+        if tech_score < CONFIG['strategy']['min_tech_score']:
+            return None
 
-        # 6. Setup Calculation
         s = CONFIG['setup']
         swing_high = df['high'].iloc[-50:].max()
         swing_low = df['low'].iloc[-50:].min()
         rng = swing_high - swing_low
-        
+        if rng <= 0:
+            return None
+
         if side == 'Long':
             entry = (swing_high - (rng * s['fib_entry_start']) + swing_high - (rng * s['fib_entry_end'])) / 2
             sl = swing_low - (rng * s['fib_sl'])
-            tp1, tp2, tp3 = swing_low + rng, swing_low + (rng*1.618), swing_low + (rng*2.618)
+            tp1, tp2, tp3 = swing_low + rng, swing_low + (rng * 1.618), swing_low + (rng * 2.618)
         else:
             entry = (swing_low + (rng * s['fib_entry_start']) + swing_low + (rng * s['fib_entry_end'])) / 2
             sl = swing_high + (rng * s['fib_sl'])
-            tp1, tp2, tp3 = swing_high - rng, swing_high - (rng*1.618), swing_high - (rng*2.618)
-            
+            tp1, tp2, tp3 = swing_high - rng, swing_high - (rng * 1.618), swing_high - (rng * 2.618)
+
         rr = calculate_rr(entry, sl, tp3)
-        if rr < CONFIG['strategy'].get('risk_reward_min', 2.0): return None
-        
+        if rr < CONFIG['strategy'].get('risk_reward_min', 2.0):
+            return None
+
         df['funding'] = float(ticker_info.get('info', {}).get('fundingRate', 0))
-        
-        # 7. Return Data (Type Casted)
         return {
-            "Symbol": symbol, "Side": side, "Timeframe": timeframe, "Pattern": pattern,
-            "Entry": float(entry), "SL": float(sl), "TP1": float(tp1), "TP2": float(tp2), "TP3": float(tp3), "RR": float(rr),
-            "Tech_Score": int(tech_score), "Quant_Score": int(quant_score), 
-            "Deriv_Score": int(deriv_score), "SMC_Score": int(smc_score),
-            "Basis": float(basis), "Z_Score": float(z_score), "Zeta_Score": float(zeta_score), "OBI": float(obi),
-            "BTC_Bias": btc_bias, "Reason": pattern, 
-            "Tech_Reasons": ", ".join(tech_reasons),
+            "Symbol": symbol,
+            "Side": side,
+            "Timeframe": timeframe,
+            "Pattern": pattern,
+            "Entry": float(entry),
+            "SL": float(sl),
+            "TP1": float(tp1),
+            "TP2": float(tp2),
+            "TP3": float(tp3),
+            "RR": float(rr),
+            "Tech_Score": int(tech_score),
+            "Quant_Score": int(quant_score),
+            "Deriv_Score": int(deriv_score),
+            "SMC_Score": int(smc_score),
+            "Basis": float(basis),
+            "Z_Score": float(z_score),
+            "Zeta_Score": float(zeta_score),
+            "OBI": float(obi),
+            "BTC_Bias": btc_bias,
+            "Reason": pattern,
+            "Tech_Reasons": ", ".join([r for r in tech_reasons if r]),
             "Quant_Reasons": ", ".join(quant_reasons),
-            "SMC_Reasons": ", ".join([r for r in smc_reasons if r]), # <--- NEW FIELD
-            "Deriv_Reasons": ", ".join(deriv_reasons), "df": df
+            "SMC_Reasons": ", ".join([r for r in smc_reasons if r]),
+            "Deriv_Reasons": ", ".join(deriv_reasons),
+            "df": df,
         }
-    except: return None
+    except Exception as e:
+        logger.warning(f"Analyze ticker failed for {symbol} {timeframe}: {e}")
+        return None
+
 
 def scan():
-    start_time = time.time()
-    print(f"\n[{pd.Timestamp.now()}] 🔭 Scanning... Mode: {os.getenv('BOT_ENV', 'PROD')}")
-    btc_bias = get_btc_bias()
-    print(f"📊 BTC Bias: {btc_bias}")
-    
-    active_signals = get_active_signals()
-    print(f"🛡️ Active Signals Ignored: {len(active_signals)}")
-    signal_count = 0 
-    
-    try:
-        mkts = exchange.load_markets()
-        
-        # 🚫 LIST OF STABLECOINS TO IGNORE (As Base Currency)
-        STABLECOINS = ['USDC', 'USDT', 'DAI', 'FDUSD', 'USDD', 'USDE', 'TUSD', 'BUSD', 'PYUSD', 'USDS', 'EUR', 'USD']
+    if is_paused():
+        logger.info("Scanner paused; skipping scan cycle")
+        update_heartbeat('scanner', {'paused': True})
+        return
 
-        # Filter Logic:
-        # 1. Must be a Swap (Perpetual)
-        # 2. Quote currency must be USDT
-        # 3. Must be Active (trading enabled)
-        # 4. Base currency MUST NOT be a stablecoin
+    start_time = time.time()
+    logger.info(f"{MODE_TAG} 🔭 Scanning... Env: {os.getenv('BOT_ENV', 'PROD')}")
+    btc_bias = get_btc_bias()
+    logger.info(f"📊 BTC Bias: {btc_bias}")
+
+    active_signals = get_active_signals()
+    logger.info(f"🛡️ Active Signals Ignored: {len(active_signals)}")
+    signal_count = 0
+
+    try:
+        mkts = ex_call('load_markets', context='load markets')
+        stablecoins = ['USDC', 'USDT', 'DAI', 'FDUSD', 'USDD', 'USDE', 'TUSD', 'BUSD', 'PYUSD', 'USDS', 'EUR', 'USD']
         syms = [
-            s for s in mkts 
-            if mkts[s].get('swap') 
-            and mkts[s]['quote'] == 'USDT' 
-            and mkts[s].get('active')
-            and mkts[s]['base'] not in STABLECOINS # <--- STABLECOIN FILTER
+            s for s in mkts
+            if mkts[s].get('swap') and mkts[s]['quote'] == 'USDT' and mkts[s].get('active') and mkts[s]['base'] not in stablecoins
         ]
-        
-        random.shuffle(syms) 
-        
-        print(f"🔍 Scanning {len(syms)} valid pairs (Stables removed)...")
+        random.shuffle(syms)
+        logger.info(f"🔍 Scanning {len(syms)} valid pairs (Stables removed)...")
 
         for tf in reversed(CONFIG['system']['timeframes']):
             with ThreadPoolExecutor(max_workers=CONFIG['system']['max_threads']) as ex:
                 futures = [ex.submit(analyze_ticker, s, tf, btc_bias, active_signals) for s in syms]
                 for f in as_completed(futures):
                     res = f.result()
-                    if res: 
-                        success = send_alert(res)
-                        if success: signal_count += 1
-                        
-    except Exception as e: print(f"Scan Error: {e}")
+                    if res and send_alert(res):
+                        signal_count += 1
+    except Exception as e:
+        logger.error(f"Scan Error: {e}")
     finally:
         duration = time.time() - start_time
-        print(f"✅ Scan Finished in {duration:.2f}s. Signals: {signal_count}")
+        update_heartbeat('scanner', {'signals': signal_count, 'duration': duration, 'bias': btc_bias, 'mode': EXECUTION_MODE})
+        logger.info(f"✅ Scan Finished in {duration:.2f}s. Signals: {signal_count}")
         send_scan_completion(signal_count, duration, btc_bias)
+
 
 if __name__ == "__main__":
     init_db()
+    logger.info(f"🚀 Scanner starting in {EXECUTION_MODE.upper()} mode.")
     scan()
     schedule.every(CONFIG['system']['check_interval_hours']).hours.do(scan)
     schedule.every(1).minutes.do(run_fast_update)
-    print("🚀 Bot Started.")
-    while True: schedule.run_pending(); time.sleep(1)
+    logger.info("🚀 Bot Started.")
+    while True:
+        schedule.run_pending()
+        time.sleep(1)

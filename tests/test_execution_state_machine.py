@@ -100,7 +100,9 @@ def _install_import_stubs(monkeypatch):
     monkeypatch.setitem(sys.modules, "scipy", types.SimpleNamespace())
     monkeypatch.setitem(sys.modules, "scipy.stats", types.SimpleNamespace(linregress=lambda *a, **k: (0, 0, 0, 0, 0)))
     monkeypatch.setitem(sys.modules, "scipy.signal", types.SimpleNamespace(argrelextrema=lambda *a, **k: ([],)))
-    monkeypatch.setitem(sys.modules, "pybit", types.SimpleNamespace(unified_trading=types.SimpleNamespace(HTTP=object, WebSocket=object)))
+    pybit_unified = types.SimpleNamespace(HTTP=object, WebSocket=object)
+    monkeypatch.setitem(sys.modules, "pybit", types.SimpleNamespace(unified_trading=pybit_unified))
+    monkeypatch.setitem(sys.modules, "pybit.unified_trading", pybit_unified)
     monkeypatch.setitem(sys.modules, "pythonjsonlogger", types.SimpleNamespace(jsonlogger=types.SimpleNamespace(JsonFormatter=object)))
     monkeypatch.setitem(sys.modules, "pytz", types.SimpleNamespace(timezone=lambda tz: None))
     monkeypatch.setitem(sys.modules, "mplfinance", types.SimpleNamespace(make_marketcolors=lambda *a, **k: None, make_mpf_style=lambda *a, **k: None, make_addplot=lambda *a, **k: None, plot=lambda *a, **k: None))
@@ -112,11 +114,14 @@ def _install_dotenv_stub(monkeypatch):
 
 
 def _import_auto_trades(tmp_path, monkeypatch):
+    config_path = tmp_path / "custom-config.json"
+    config_path.write_text(json.dumps(BASE_CONFIG))
+    monkeypatch.setenv("BYBIT_BOT_CONFIG_PATH", str(config_path))
     monkeypatch.chdir(tmp_path)
-    (tmp_path / "config.json").write_text(json.dumps(BASE_CONFIG))
     _install_dotenv_stub(monkeypatch)
     _install_import_stubs(monkeypatch)
     sys.modules.pop("modules.config_loader", None)
+    sys.modules.pop("modules.runtime_paths", None)
     sys.modules.pop("modules.database", None)
     sys.modules.pop("auto_trades", None)
     return importlib.import_module("auto_trades")

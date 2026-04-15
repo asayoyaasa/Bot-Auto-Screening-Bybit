@@ -53,10 +53,13 @@ def _install_dotenv_stub(monkeypatch):
 
 
 def _import_config_loader(tmp_path, monkeypatch, config):
+    config_path = tmp_path / "custom-config.json"
+    config_path.write_text(json.dumps(config))
+    monkeypatch.setenv("BYBIT_BOT_CONFIG_PATH", str(config_path))
     monkeypatch.chdir(tmp_path)
-    (tmp_path / "config.json").write_text(json.dumps(config))
     _install_dotenv_stub(monkeypatch)
     sys.modules.pop("modules.config_loader", None)
+    sys.modules.pop("modules.runtime_paths", None)
     module = importlib.import_module("modules.config_loader")
     return module
 
@@ -77,6 +80,19 @@ def test_validate_config_rejects_live_mode_without_exchange_keys(tmp_path, monke
 
     with pytest.raises(ValueError, match="Live mode requires api.bybit_key"):
         module.validate_config(live_config)
+
+
+def test_validate_config_rejects_blank_live_mode_env_keys(tmp_path, monkeypatch):
+    live_config = json.loads(json.dumps(BASE_CONFIG))
+    live_config["execution"]["mode"] = "live"
+    _install_dotenv_stub(monkeypatch)
+    monkeypatch.setenv("BYBIT_KEY", "   ")
+    monkeypatch.setenv("BYBIT_SECRET", "")
+
+    module = _import_config_loader(tmp_path, monkeypatch, live_config)
+
+    with pytest.raises(ValueError, match="Live mode requires BYBIT_KEY and BYBIT_SECRET"):
+        module.load_config()
 
 
 def test_load_config_applies_env_overrides_and_testing_database(tmp_path, monkeypatch):

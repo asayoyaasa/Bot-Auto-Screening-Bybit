@@ -103,11 +103,14 @@ def _install_dotenv_stub(monkeypatch):
 
 
 def _import_database(tmp_path, monkeypatch):
+    config_path = tmp_path / "custom-config.json"
+    config_path.write_text(json.dumps(BASE_CONFIG))
+    monkeypatch.setenv("BYBIT_BOT_CONFIG_PATH", str(config_path))
     monkeypatch.chdir(tmp_path)
-    (tmp_path / "config.json").write_text(json.dumps(BASE_CONFIG))
     _install_dotenv_stub(monkeypatch)
     _install_fake_psycopg2(monkeypatch)
     sys.modules.pop("modules.config_loader", None)
+    sys.modules.pop("modules.runtime_paths", None)
     sys.modules.pop("modules.database", None)
     return importlib.import_module("modules.database")
 
