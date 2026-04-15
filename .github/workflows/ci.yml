@@ -1,0 +1,62 @@
+name: Bybit Bot CI/CD Pipeline
+
+on:
+  push:
+    branches: [ "main", "develop" ]
+  pull_request:
+    branches: [ "main", "develop" ]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Set up Python 3.11
+      uses: actions/setup-python@v4
+      with:
+        python-version: "3.11"
+        cache: 'pip'
+        
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        pip install pytest pytest-cov pytest-httpserver gitleaks
+        
+    - name: Run Security Scan (gitleaks)
+      run: |
+        gitleaks detect --source . -v
+        
+    - name: Run Tests with Coverage
+      run: |
+        pytest tests/ --cov=modules --cov=auto_trades --cov-report=xml --cov-report=term
+
+    - name: Enforce Coverage Threshold
+      run: |
+        pytest tests/ --cov=modules --cov=auto_trades --cov-fail-under=70 -q
+        
+  build-and-push:
+    needs: test
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Build Docker Image
+      run: |
+        docker build -t bybit-bot:${{ github.sha }} .
+        
+    - name: Tag and Checksum
+      run: |
+        IMAGE_SHA=$(docker inspect --format='{{index .RepoTags 0}}' bybit-bot:${{ github.sha }} | sha256sum | awk '{print $1}')
+        echo "Docker Image SHA256: $IMAGE_SHA"
+        echo "IMAGE_SHA=$IMAGE_SHA" >> $GITHUB_ENV
+        
+    - name: Create Git Tag for Release
+      if: success()
+      uses: mathieudutour/github-tag-action@v6.1
+      with:
+        github_token: ${{ secrets.GITHUB_TOKEN }}
+        custom_tag: release-${{ github.sha }}
+        tag_prefix: ""
