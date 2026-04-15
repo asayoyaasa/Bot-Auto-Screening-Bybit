@@ -27,6 +27,29 @@ from modules.paper_trade_utils import (
     validate_quantity,
 )
 from modules.runtime_utils import retry_call
+from execution.paper_engine import (
+    DEFAULT_PAPER_SETTINGS,
+    build_event_sequence as paper_build_event_sequence,
+    close_paper_trade as paper_close_paper_trade,
+    compute_paper_equity as paper_compute_paper_equity,
+    fetch_active_trade as paper_fetch_active_trade,
+    paper_settings,
+    process_paper_trades as paper_process_paper_trades,
+    take_partial_profit as paper_take_partial_profit,
+)
+from execution.reporting import generate_daily_report as reporting_generate_daily_report
+from execution.websocket_handlers import (
+    on_execution_update as ws_on_execution_update,
+    on_position_update as ws_on_position_update,
+)
+from execution.order_manager import (
+    build_entry_order_link_id,
+    fetch_position_safe as fetch_position_safe_manager,
+    move_stop_to_entry as move_stop_to_entry_manager,
+    place_entry_order,
+    place_split_tps as place_split_tps_manager,
+    resolve_position_contracts,
+)
 
 TARGET_LEVERAGE = 25
 RISK_PERCENT = 0.01
@@ -58,44 +81,11 @@ def ex_call(method_name, *args, context="", **kwargs):
 
 
 def fetch_position_safe(symbol):
-    try:
-        pos = ex_call('fetch_position', symbol, context=f'fetch position {symbol}')
-        if isinstance(pos, dict):
-            return pos
-    except Exception as exc:
-        logger.warning(f"fetch_position primary method failed for {symbol}: {exc}")
-
-    try:
-        positions = ex_call('fetch_positions', [symbol], context=f'fetch positions {symbol}')
-        if isinstance(positions, list):
-            for pos in positions:
-                if pos.get('symbol') == symbol or pos.get('info', {}).get('symbol') == _bybit_symbol(symbol):
-                    return pos
-    except Exception as exc:
-        logger.warning(f"fetch_positions fallback failed for {symbol}: {exc}")
-
-    return {'contracts': 0, 'info': {}}
+    return fetch_position_safe_manager(exchange, symbol, logger=logger, retry_call=retry_call)
 
 
 def get_position_contracts(position):
-    if not isinstance(position, dict):
-        return 0.0
-    for key in ('contracts', 'contractSize', 'size'):
-        value = position.get(key)
-        if value not in (None, ''):
-            try:
-                return abs(float(value))
-            except Exception:
-                pass
-    info = position.get('info', {}) if isinstance(position.get('info', {}), dict) else {}
-    for key in ('size', 'qty', 'positionValue'):
-        value = info.get(key)
-        if value not in (None, ''):
-            try:
-                return abs(float(value))
-            except Exception:
-                pass
-    return 0.0
+    return resolve_position_contracts(position)
 
 
 def fetch_closed_pnl_safe(symbol):
@@ -115,27 +105,6 @@ def _bybit_symbol(symbol):
     return symbol.replace('/', '')
 
 
-def move_stop_to_entry(symbol, side, entry_price):
-    positions = ex_call('fetch_positions', [symbol], context=f'fetch positions {symbol}')
-    position_idx = None
-    for pos in positions or []:
-        if pos.get('symbol') == _bybit_symbol(symbol) and pos.get('side') == side:
-            position_idx = int(pos.get('positionIdx', 0))
-            break
-    if position_idx is None:
-        raise ValueError(f"No matching position found for {symbol} {side}")
-
-    return retry_call(
-        bybit_http.set_trading_stop,
-        category="linear",
-        symbol=_bybit_symbol(symbol),
-        stopLoss=str(entry_price),
-        positionIdx=position_idx,
-        retries=3,
-        base_delay=1.0,
-        logger=logger,
-        context=f"move stop to entry {symbol}",
-    )
 
 
 def update_signal_status(cur, signal_id, status, *, entry_hit=False, closed=False, exit_price=None):
@@ -184,251 +153,27 @@ def fetch_latest_candle(symbol, timeframe='1m'):
 
 
 def build_event_sequence(side, low_price, high_price, stop_loss, targets):
-    _ = normalize_side(side)
-    target_events = [
-        (idx + 1, target)
-        for idx, target in enumerate(targets)
-        if touch_triggered(low_price, high_price, target)
-    ]
-    sl_hit = touch_triggered(low_price, high_price, stop_loss)
-    if sl_hit and target_events and merge_paper_settings(CONFIG.get('execution', {}).get('paper', {})).get('conservative_intrabar', True):
-        return [('sl', stop_loss)]
-    events = [('tp', idx, target) for idx, target in target_events]
-    if sl_hit:
-        events.append(('sl', stop_loss))
-    return events
+    return paper_build_event_sequence(side, low_price, high_price, stop_loss, targets)
 
 
 def fetch_active_trade(cur, trade_id):
-    cur.execute(
-        """
-        SELECT id, signal_id, symbol, side, entry_price, sl_price, tp1, tp2, tp3,
-               quantity, leverage, status, pnl, is_sl_moved,
-               execution_mode, remaining_quantity, filled_quantity,
-               entry_fill_price, exit_fill_price,
-               realized_fees, realized_pnl_gross, realized_pnl_net,
-               tp1_hit, tp2_hit, tp3_hit
-        FROM active_trades
-        WHERE id = %s
-        """,
-        (trade_id,),
-    )
-    return cur.fetchone()
+    return paper_fetch_active_trade(cur, trade_id)
 
 
 def compute_paper_equity(cur):
-    cur.execute("SELECT COALESCE(SUM(realized_pnl_net), 0) FROM active_trades WHERE execution_mode = 'paper' AND status = 'CLOSED'")
-    realized = float(cur.fetchone()[0] or 0.0)
-    return paper_settings().get('initial_balance', DEFAULT_PAPER_SETTINGS['initial_balance']) + realized
+    return paper_compute_paper_equity(cur)
 
 
 def close_paper_trade(cur, trade, exit_price, reason):
-    (
-        trade_id, signal_id, symbol, side, entry_price, sl_price, tp1, tp2, tp3,
-        quantity, leverage, status, pnl, is_sl_moved,
-        execution_mode_value, remaining_quantity, filled_quantity,
-        entry_fill_price, exit_fill_price,
-        realized_fees, realized_pnl_gross, realized_pnl_net,
-        tp1_hit, tp2_hit, tp3_hit,
-    ) = trade
-
-    exit_exec_price = apply_slippage(exit_price, side, is_entry=False)
-    remaining_qty = float(remaining_quantity or 0.0)
-    entry_exec_price = float(entry_fill_price or entry_price)
-    gross_add = gross_pnl_for_exit(side, entry_exec_price, exit_exec_price, remaining_qty)
-    fee_add = trade_fee(abs(exit_exec_price * remaining_qty))
-    total_fees = float(realized_fees or 0.0) + fee_add
-    total_gross = float(realized_pnl_gross or 0.0) + gross_add
-    total_net = total_gross - total_fees
-    cur.execute(
-        """
-        UPDATE active_trades
-        SET status = 'CLOSED',
-            pnl = %s,
-            realized_pnl_gross = %s,
-            realized_pnl_net = %s,
-            realized_fees = %s,
-            exit_fill_price = %s,
-            remaining_quantity = 0,
-            updated_at = NOW()
-        WHERE id = %s
-        """,
-        (total_net, total_gross, total_net, total_fees, exit_exec_price, trade_id),
-    )
-    update_signal_status(cur, signal_id, 'Closed', closed=True, exit_price=exit_exec_price)
-    send_event_message(
-        f"Paper Trade Closed: {symbol}",
-        [
-            f"Reason: {reason}",
-            f"Exit: {exit_exec_price:.6f}",
-            f"Gross PnL: {total_gross:.4f}",
-            f"Fees: {total_fees:.4f}",
-            f"Net PnL: {total_net:.4f}",
-        ],
-    )
+    return paper_close_paper_trade(cur, trade, exit_price, reason)
 
 
 def take_partial_profit(cur, trade, target_no, target_price):
-    (
-        trade_id, signal_id, symbol, side, entry_price, sl_price, tp1, tp2, tp3,
-        quantity, leverage, status, pnl, is_sl_moved,
-        execution_mode_value, remaining_quantity, filled_quantity,
-        entry_fill_price, exit_fill_price,
-        realized_fees, realized_pnl_gross, realized_pnl_net,
-        tp1_hit, tp2_hit, tp3_hit,
-    ) = trade
-
-    remaining_qty = float(remaining_quantity or 0.0)
-    split = TP_SPLIT[target_no - 1]
-    qty_close = remaining_qty if target_no == 3 else min(remaining_qty, float(quantity) * split)
-    if qty_close <= 0:
-        return
-    exec_price = apply_slippage(target_price, side, is_entry=False)
-    entry_exec_price = float(entry_fill_price or entry_price)
-    gross_add = gross_pnl_for_exit(side, entry_exec_price, exec_price, qty_close)
-    fee_add = trade_fee(abs(exec_price * qty_close))
-    total_fees = float(realized_fees or 0.0) + fee_add
-    total_gross = float(realized_pnl_gross or 0.0) + gross_add
-    total_net = total_gross - total_fees
-    new_remaining = max(0.0, remaining_qty - qty_close)
-    status_value = 'CLOSED' if new_remaining <= 1e-12 else 'OPEN_TPS_SET'
-    fields = {
-        1: ('tp1_hit', tp1_hit),
-        2: ('tp2_hit', tp2_hit),
-        3: ('tp3_hit', tp3_hit),
-    }
-    hit_field, hit_value = fields[target_no]
-    if hit_value:
-        return
-    cur.execute(
-        f"""
-        UPDATE active_trades
-        SET {hit_field} = TRUE,
-            status = %s,
-            pnl = %s,
-            realized_pnl_gross = %s,
-            realized_pnl_net = %s,
-            realized_fees = %s,
-            exit_fill_price = %s,
-            remaining_quantity = %s,
-            updated_at = NOW()
-        WHERE id = %s
-        """,
-        (status_value, total_net, total_gross, total_net, total_fees, exec_price, new_remaining, trade_id),
-    )
-    send_event_message(
-        f"Paper TP{target_no} Hit: {symbol}",
-        [
-            f"Target: {target_price}",
-            f"Executed: {exec_price:.6f}",
-            f"Qty Closed: {qty_close:.6f}",
-            f"Net PnL: {total_net:.4f}",
-        ],
-    )
-    if target_no == 1 and not is_sl_moved:
-        cur.execute("UPDATE active_trades SET is_sl_moved = TRUE, sl_price = entry_price WHERE id = %s", (trade_id,))
-        send_event_message(
-            f"Paper SL Moved to Breakeven: {symbol}",
-            [f"Entry: {entry_exec_price:.6f}", f"New SL: {entry_exec_price:.6f}"],
-        )
-    if new_remaining <= 1e-12:
-        update_signal_status(cur, signal_id, 'Closed', closed=True, exit_price=exec_price)
+    return paper_take_partial_profit(cur, trade, target_no, target_price)
 
 
 def process_paper_trades():
-    if not IS_PAPER or is_paused():
-        return
-    conn = get_conn()
-    try:
-        cur = conn.cursor()
-        cur.execute(
-            """
-            SELECT id, signal_id, symbol, side, entry_price, sl_price, tp1, tp2, tp3,
-                   quantity, leverage, status, pnl, is_sl_moved,
-                   execution_mode, remaining_quantity, filled_quantity,
-                   entry_fill_price, exit_fill_price,
-                   realized_fees, realized_pnl_gross, realized_pnl_net,
-                   tp1_hit, tp2_hit, tp3_hit
-            FROM active_trades
-            WHERE execution_mode = 'paper' AND status IN ('OPEN', 'OPEN_TPS_SET')
-            ORDER BY created_at ASC
-            """
-        )
-        trades = cur.fetchall()
-        if not trades:
-            update_heartbeat('autotrader', {'paused': False, 'mode': EXECUTION_MODE, 'paper_equity': compute_paper_equity(cur)})
-            conn.commit()
-            return
-
-        for trade in trades:
-            symbol = trade[2]
-            side = trade[3]
-            entry_price = float(trade[4])
-            sl_price = float(trade[5])
-            tp1 = float(trade[6])
-            tp2 = float(trade[7])
-            tp3 = float(trade[8])
-            status = trade[11]
-            candle = fetch_latest_candle(symbol, '1m')
-            if not candle:
-                continue
-            low_price = candle['low']
-            high_price = candle['high']
-
-            if status == 'OPEN':
-                if touch_triggered(side, low_price, high_price, entry_price):
-                    filled_price = apply_slippage(entry_price, side, is_entry=True)
-                    entry_fee = trade_fee(abs(filled_price * float(trade[9])))
-                    cur.execute(
-                        """
-                        UPDATE active_trades
-                        SET status = 'OPEN_TPS_SET',
-                            entry_fill_price = %s,
-                            filled_quantity = quantity,
-                            remaining_quantity = quantity,
-                            realized_fees = %s,
-                            updated_at = NOW()
-                        WHERE id = %s
-                        """,
-                        (filled_price, entry_fee, trade[0]),
-                    )
-                    update_signal_status(cur, trade[1], 'Active', entry_hit=True)
-                    send_event_message(
-                        f"Paper Entry Filled: {symbol}",
-                        [f"Side: {side}", f"Entry: {filled_price:.6f}", f"Fee: {entry_fee:.4f}"],
-                    )
-                    conn.commit()
-                    trade = fetch_active_trade(cur, trade[0])
-                    if not trade:
-                        continue
-                    status = trade[11]
-
-            if status != 'OPEN_TPS_SET':
-                continue
-
-            event_sequence = build_event_sequence(side, low_price, high_price, float(trade[5]), [float(trade[6]), float(trade[7]), float(trade[8])])
-            for event in event_sequence:
-                current_trade = fetch_active_trade(cur, trade[0])
-                if not current_trade:
-                    break
-                if current_trade[11] == 'CLOSED':
-                    break
-                if event[0] == 'sl':
-                    close_paper_trade(cur, current_trade, event[1], 'Stop Loss')
-                    conn.commit()
-                    break
-                _, target_no, target_price = event
-                hit_flags = {1: current_trade[22], 2: current_trade[23], 3: current_trade[24]}
-                if not hit_flags[target_no]:
-                    take_partial_profit(cur, current_trade, target_no, target_price)
-                    conn.commit()
-
-        update_heartbeat('autotrader', {'paused': False, 'mode': EXECUTION_MODE, 'paper_equity': compute_paper_equity(cur)})
-        conn.commit()
-    except Exception as exc:
-        logger.error(f"{MODE_TAG} Paper processing error: {exc}")
-    finally:
-        release_conn(conn)
+    return paper_process_paper_trades()
 
 
 def init_execution_db():
@@ -513,132 +258,14 @@ def init_execution_db():
         release_conn(conn)
 
 
-def place_split_tps(symbol, side, total_qty, tp1, tp2, tp3):
-    try:
-        side_str = str(side).lower()
-        tp_side = 'sell' if side_str in ['buy', 'long'] else 'buy'
-        
-        tp1 = float(exchange.price_to_precision(symbol, tp1))
-        tp2 = float(exchange.price_to_precision(symbol, tp2))
-        tp3 = float(exchange.price_to_precision(symbol, tp3))
-
-        qtys = [
-            float(exchange.amount_to_precision(symbol, total_qty * TP_SPLIT[0])),
-            float(exchange.amount_to_precision(symbol, total_qty * TP_SPLIT[1])),
-            float(exchange.amount_to_precision(symbol, total_qty * TP_SPLIT[2])),
-        ]
-        current_sum = sum(qtys)
-        if abs(current_sum - total_qty) > 1e-8:
-            qtys[2] = float(exchange.amount_to_precision(symbol, max(0.0, qtys[2] + (total_qty - current_sum))))
-            
-        q1, q2, q3 = qtys
-        params = {'reduceOnly': True}
-        logger.info(f"⚡ Placing TPs for {symbol} ({tp_side.upper()}): {q1} | {q2} | {q3}")
-        ex_call('create_order', symbol, 'limit', tp_side, q1, tp1, params, context=f'place tp1 {symbol}')
-        ex_call('create_order', symbol, 'limit', tp_side, q2, tp2, params, context=f'place tp2 {symbol}')
-        ex_call('create_order', symbol, 'limit', tp_side, q3, tp3, params, context=f'place tp3 {symbol}')
-        return True
-    except Exception as e:
-        logger.error(f"⚠️ TP Placement Failed {symbol}: {e}")
-        return False
 
 
 def on_execution_update(message):
-    try:
-        data = message.get('data', [])
-        for exec_item in data:
-            symbol = exec_item['symbol']
-            side = exec_item['side']
-            exec_type = exec_item.get('execType')
-            if exec_type != 'Trade':
-                continue
-
-            conn = get_conn()
-            try:
-                cur = conn.cursor()
-                cur.execute(
-                    "SELECT id, signal_id, tp1, tp2, tp3 FROM active_trades WHERE order_id = %s LIMIT 1",
-                    (exec_item.get("orderId"),),
-                )
-                row = cur.fetchone()
-                if not row:
-                    continue
-
-                t_id, signal_id, tp1, tp2, tp3 = row
-                logger.info(f"⚡ WS: Entry Filled for {symbol}! Placing TPs...")
-                pos = fetch_position_safe(symbol)
-                current_size = get_position_contracts(pos)
-                if current_size > 0 and place_split_tps(symbol, side, current_size, tp1, tp2, tp3):
-                    cur.execute("UPDATE active_trades SET status = 'OPEN_TPS_SET', updated_at = NOW() WHERE id = %s", (t_id,))
-                    update_signal_status(cur, signal_id, 'Active', entry_hit=True)
-                    conn.commit()
-                    send_event_message(f"Entry Filled: {symbol}", [f"Side: {side}", f"TPs placed for size {current_size}"])
-            except Exception as e:
-                logger.error(f"WS Exec Logic Error: {e}")
-            finally:
-                release_conn(conn)
-    except Exception as e:
-        logger.error(f"WS Payload Error: {e}")
+    return ws_on_execution_update(message)
 
 
 def on_position_update(message):
-    try:
-        data = message.get('data', [])
-        for pos in data:
-            symbol = pos['symbol']
-            size = float(pos['size'])
-            mark_price = float(pos['markPrice'])
-            side = pos['side']
-
-            conn = get_conn()
-            try:
-                cur = conn.cursor()
-                cur.execute(
-                    """
-                    SELECT id, signal_id, entry_price, tp1, is_sl_moved, status 
-                    FROM active_trades 
-                    WHERE symbol = %s AND side = %s AND status = 'OPEN_TPS_SET' 
-                    ORDER BY id DESC 
-                    LIMIT 1
-                    """,
-                    (symbol, side),
-                )
-                row = cur.fetchone()
-                if not row:
-                    continue
-
-                t_id, signal_id, entry, tp1, sl_moved, status = row
-                if size == 0:
-                    logger.info(f"🏁 WS: {symbol} Position Closed. Fetching PnL...")
-                    time.sleep(1)
-                    try:
-                        real_pnl = fetch_closed_pnl_safe(symbol)
-                        cur.execute("UPDATE active_trades SET status = 'CLOSED', pnl = %s, updated_at = NOW() WHERE id = %s", (real_pnl, t_id))
-                        update_signal_status(cur, signal_id, 'Closed', closed=True, exit_price=mark_price)
-                        send_event_message(f"Position Closed: {symbol}", [f"Side: {side}", f"PnL: {real_pnl}"])
-                    except Exception as e:
-                        logger.warning(f"Could not fetch exact PnL for {symbol}: {e}")
-                        cur.execute("UPDATE active_trades SET status = 'CLOSED', updated_at = NOW() WHERE id = %s", (t_id,))
-                        update_signal_status(cur, signal_id, 'Closed', closed=True, exit_price=mark_price)
-                    conn.commit()
-                    continue
-
-                hit_tp1 = (side == 'Buy' and mark_price >= float(tp1)) or (side == 'Sell' and mark_price <= float(tp1))
-                if hit_tp1 and not sl_moved:
-                    logger.info(f"♻️ WS: {symbol} hit TP1. Moving SL to Entry...")
-                    try:
-                        move_stop_to_entry(symbol, side, float(entry))
-                        cur.execute("UPDATE active_trades SET is_sl_moved = TRUE WHERE id = %s", (t_id,))
-                        conn.commit()
-                        send_event_message(f"SL Moved to Breakeven: {symbol}", [f"Entry: {entry}", f"Current mark: {mark_price}"])
-                    except Exception as sl_err:
-                        logger.error(f"⚠️ Failed to move SL for {symbol}: {sl_err}")
-            except Exception as e:
-                logger.error(f"WS Position Logic Error for {symbol}: {e}")
-            finally:
-                release_conn(conn)
-    except Exception as e:
-        logger.error(f"WS Position Payload Error: {e}")
+    return ws_on_position_update(message)
 
 
 def ingest_fresh_signals():
@@ -747,27 +374,24 @@ def execute_pending_orders():
 
                 ticker = ex_call('fetch_ticker', sym, context=f'fetch ticker {sym} execute')
                 current_price = float(ticker['last'])
-                entry = float(entry)
-                is_better_price = (side == 'Long' and current_price <= entry) or (side == 'Short' and current_price >= entry)
-                type_side = 'buy' if side == 'Long' else 'sell'
-                idempotency_key = f"{sym}:{oid}:entry"
-                params = {'stopLoss': float(exchange.price_to_precision(sym, sl)), 'orderLinkId': idempotency_key}
-                qty = float(exchange.amount_to_precision(sym, qty))
-                if qty <= 0:
-                    raise ValueError(f"Rounded quantity too small for {sym}")
-
-                if is_better_price:
-                    logger.info(f"{MODE_TAG} ⚡ {sym}: Price Better ({current_price} vs {entry}). Executing MARKET...")
-                    res = ex_call('create_order', sym, 'market', type_side, qty, None, params, context=f'market order {sym}')
-                else:
-                    logger.info(f"{MODE_TAG} ⏳ {sym}: Waiting ({current_price} vs {entry}). Placing LIMIT...")
-                    res = ex_call('create_order', sym, 'limit', type_side, qty, float(exchange.price_to_precision(sym, entry)), params, context=f'limit order {sym}')
-
-                if res and 'id' in res:
-                    cur.execute("UPDATE active_trades SET order_id = %s, status = 'OPEN' WHERE id = %s", (res['id'], oid))
+                order_result = place_entry_order(
+                    exchange,
+                    sym,
+                    side,
+                    qty,
+                    float(entry),
+                    float(sl),
+                    current_price,
+                    logger=logger,
+                    retry_call=retry_call,
+                    order_link_id=build_entry_order_link_id(sym, oid),
+                )
+                response = order_result.response if isinstance(order_result.response, dict) else {}
+                if response and response.get('id'):
+                    cur.execute("UPDATE active_trades SET order_id = %s, status = 'OPEN' WHERE id = %s", (response['id'], oid))
                     update_signal_status(cur, signal_id, 'Order Placed')
                     conn.commit()
-                    logger.info(f"{MODE_TAG} ✅ Order Placed for {sym} (ID: {res['id']})")
+                    logger.info(f"{MODE_TAG} ✅ Order Placed for {sym} (ID: {response['id']})")
             except Exception as e:
                 logger.error(f"{MODE_TAG} ❌ Execution Failed {sym}: {e}")
                 cur.execute("UPDATE active_trades SET status = 'FAILED' WHERE id = %s", (oid,))
@@ -804,8 +428,8 @@ def check_missed_tps():
                 if order_status == 'closed':
                     logger.warning(f"⚠️ Safety Net: Found filled entry for {sym} (ID: {oid}). Placing TPs...")
                     pos = fetch_position_safe(sym)
-                    size = get_position_contracts(pos)
-                    if size > 0 and place_split_tps(sym, side, size, tp1, tp2, tp3):
+                    size = resolve_position_contracts(pos)
+                    if size > 0 and place_split_tps_manager(exchange, sym, side, size, tp1, tp2, tp3, logger=logger, retry_call=retry_call, trade_id=t_id):
                         cur.execute("UPDATE active_trades SET status = 'OPEN_TPS_SET', updated_at = NOW() WHERE id = %s", (t_id,))
                         update_signal_status(cur, signal_id, 'Active', entry_hit=True)
                         conn.commit()
@@ -825,58 +449,7 @@ def check_missed_tps():
 
 
 def generate_daily_report():
-    logger.info("📊 Generating Daily Report...")
-    conn = get_conn()
-    try:
-        cur = conn.cursor()
-        cur.execute(
-            """
-            SELECT COUNT(*), SUM(CASE WHEN pnl > 0 THEN 1 ELSE 0 END), SUM(CASE WHEN pnl <= 0 THEN 1 ELSE 0 END),
-                   SUM(pnl), MAX(pnl), MIN(pnl)
-            FROM active_trades
-            WHERE status = 'CLOSED' AND updated_at >= NOW() - INTERVAL '24 hours' AND execution_mode = %s
-        """,
-            (EXECUTION_MODE,),
-        )
-        row = cur.fetchone()
-        if row and row[0] > 0:
-            total, wins, losses, pnl, best, worst = row
-            pnl = pnl if pnl else 0
-            win_rate = (wins / total) * 100
-            cur.execute("SELECT symbol FROM active_trades WHERE pnl = %s AND execution_mode = %s LIMIT 1", (best, EXECUTION_MODE))
-            b_sym = cur.fetchone()
-            best_sym = b_sym[0] if b_sym else '-'
-            cur.execute("SELECT symbol FROM active_trades WHERE pnl = %s AND execution_mode = %s LIMIT 1", (worst, EXECUTION_MODE))
-            w_sym = cur.fetchone()
-            worst_sym = w_sym[0] if w_sym else '-'
-            cur.execute(
-                """
-                INSERT INTO daily_reports (report_date, total_pnl, win_rate, total_wins, total_losses, total_trades, best_trade_symbol, best_trade_pnl, worst_trade_symbol, worst_trade_pnl, execution_mode)
-                VALUES (CURRENT_DATE, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                ON CONFLICT (report_date, execution_mode) DO UPDATE SET
-                    total_pnl = EXCLUDED.total_pnl,
-                    win_rate = EXCLUDED.win_rate,
-                    total_wins = EXCLUDED.total_wins,
-                    total_losses = EXCLUDED.total_losses,
-                    total_trades = EXCLUDED.total_trades,
-                    best_trade_symbol = EXCLUDED.best_trade_symbol,
-                    best_trade_pnl = EXCLUDED.best_trade_pnl,
-                    worst_trade_symbol = EXCLUDED.worst_trade_symbol,
-                    worst_trade_pnl = EXCLUDED.worst_trade_pnl,
-                    generated_at = CURRENT_TIMESTAMP
-                """,
-                (pnl, win_rate, wins, losses, total, best_sym, best, worst_sym, worst, EXECUTION_MODE),
-            )
-            conn.commit()
-            logger.info(f"✅ Report Generated: ${pnl:.2f} ({wins}W/{losses}L)")
-            report_lines = [f'Mode: {EXECUTION_MODE.upper()}', f'Trades: {total}', f'Wins: {wins}', f'Losses: {losses}', f'Win rate: {win_rate:.2f}%', f'PnL: {pnl}']
-            if IS_PAPER:
-                report_lines.append(f'Paper equity: {compute_paper_equity(cur):.2f}')
-            send_event_message('Daily Trading Report', report_lines)
-    except Exception as e:
-        logger.error(f"Report Error: {e}")
-    finally:
-        release_conn(conn)
+    return reporting_generate_daily_report()
 
 
 if __name__ == "__main__":
