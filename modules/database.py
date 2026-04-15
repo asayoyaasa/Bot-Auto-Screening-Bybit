@@ -84,7 +84,9 @@ def migrate_schema(conn):
 
     try:
         cur.execute("SELECT to_regclass('public.trades');")
-        if cur.fetchone()[0] is None:
+        row = cur.fetchone()
+        table_exists = bool(row and row[0] is not None)
+        if not table_exists:
             logger.info("Table 'trades' not found. Creating fresh...")
             cols = [f"{k} {v}" for k, v in required_columns.items()]
             query = f"CREATE TABLE trades ({', '.join(cols)});"

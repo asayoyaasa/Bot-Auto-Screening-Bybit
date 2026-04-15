@@ -95,7 +95,7 @@ def _install_import_stubs(monkeypatch):
     monkeypatch.setitem(sys.modules, "ccxt", types.SimpleNamespace(bybit=lambda *a, **k: object()))
     monkeypatch.setitem(sys.modules, "schedule", types.SimpleNamespace(every=lambda *a, **k: types.SimpleNamespace(hours=types.SimpleNamespace(do=lambda *a, **k: None), minutes=types.SimpleNamespace(do=lambda *a, **k: None), day=types.SimpleNamespace(at=lambda *a, **k: types.SimpleNamespace(do=lambda *a, **k: None)), do=lambda *a, **k: None), run_pending=lambda: None))
     monkeypatch.setitem(sys.modules, "pandas", types.SimpleNamespace(DataFrame=lambda *a, **k: None, to_datetime=lambda *a, **k: None))
-    monkeypatch.setitem(sys.modules, "pandas_ta", types.SimpleNamespace(ema=lambda *a, **k: None))
+    monkeypatch.setitem(sys.modules, "pandas_ta_classic", types.SimpleNamespace(ema=lambda *a, **k: None))
     monkeypatch.setitem(sys.modules, "numpy", types.SimpleNamespace())
     monkeypatch.setitem(sys.modules, "scipy", types.SimpleNamespace())
     monkeypatch.setitem(sys.modules, "scipy.stats", types.SimpleNamespace(linregress=lambda *a, **k: (0, 0, 0, 0, 0)))

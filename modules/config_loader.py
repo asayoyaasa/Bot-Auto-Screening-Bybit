@@ -45,6 +45,33 @@ def _is_blank(value):
     return value is None or (isinstance(value, str) and not value.strip())
 
 
+def _normalize_api_aliases(config):
+    api = config.setdefault('api', {})
+    aliases = {
+        'bybit_key': ('bybit_key', 'BYBIT_KEY'),
+        'bybit_secret': ('bybit_secret', 'BYBIT_SECRET'),
+        'telegram_bot_token': ('telegram_bot_token', 'TELEGRAM_TOKEN'),
+        'telegram_chat_id': ('telegram_chat_id', 'TELEGRAM_CHAT_ID'),
+        'discord_webhook': ('discord_webhook', 'DISCORD_WEBHOOK'),
+    }
+
+    for canonical, keys in aliases.items():
+        current = api.get(canonical, '')
+        if not _is_blank(current):
+            api[canonical] = current
+            continue
+
+        for key in keys:
+            candidate = api.get(key, '')
+            if not _is_blank(candidate):
+                api[canonical] = candidate
+                break
+        else:
+            api[canonical] = ''
+
+    return config
+
+
 def validate_config(config):
     missing = []
     for path in REQUIRED_PATHS:
@@ -68,6 +95,15 @@ def validate_config(config):
         raise ValueError('strategy.risk_reward_min must be > 0')
     if config['indicators']['min_rvol'] <= 0:
         raise ValueError('indicators.min_rvol must be > 0')
+
+    if mode == 'live':
+        api = config.get('api', {})
+        env_key = os.getenv('BYBIT_KEY', '').strip()
+        env_secret = os.getenv('BYBIT_SECRET', '').strip()
+        if _is_blank(api.get('bybit_key', '')) and _is_blank(env_key):
+            raise ValueError('Live mode requires api.bybit_key and api.bybit_secret to be set')
+        if _is_blank(api.get('bybit_secret', '')) and _is_blank(env_secret):
+            raise ValueError('Live mode requires api.bybit_key and api.bybit_secret to be set')
 
     return config
 
@@ -103,15 +139,13 @@ def load_config():
     _override_if_env_present(config, 'telegram_chat_id', 'TELEGRAM_CHAT_ID')
     _override_if_env_present(config, 'discord_webhook', 'DISCORD_WEBHOOK')
 
+    _normalize_api_aliases(config)
+
     if os.getenv('BOT_ENV') == 'testing':
         logger.warning('RUNNING IN TEST MODE')
         config['database']['database'] = 'bybit_bot_test'
 
     validated = validate_config(config)
-    if str(validated.get('execution', {}).get('mode', 'paper')).strip().lower() == 'live':
-        if _is_blank(os.getenv('BYBIT_KEY', '')) or _is_blank(os.getenv('BYBIT_SECRET', '')):
-            raise ValueError('Live mode requires BYBIT_KEY and BYBIT_SECRET to be set and non-blank')
-
     return validated
 
 

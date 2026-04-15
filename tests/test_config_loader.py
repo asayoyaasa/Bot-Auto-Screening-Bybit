@@ -76,8 +76,13 @@ def test_validate_config_accepts_minimal_paper_config(tmp_path, monkeypatch):
 def test_validate_config_rejects_live_mode_without_exchange_keys(tmp_path, monkeypatch):
     live_config = json.loads(json.dumps(BASE_CONFIG))
     live_config["execution"]["mode"] = "live"
+    _install_dotenv_stub(monkeypatch)
+    monkeypatch.setenv("BYBIT_KEY", "dummy-key")
+    monkeypatch.setenv("BYBIT_SECRET", "dummy-secret")
     module = _import_config_loader(tmp_path, monkeypatch, live_config)
 
+    monkeypatch.delenv("BYBIT_KEY", raising=False)
+    monkeypatch.delenv("BYBIT_SECRET", raising=False)
     with pytest.raises(ValueError, match="Live mode requires api.bybit_key"):
         module.validate_config(live_config)
 
@@ -86,12 +91,14 @@ def test_validate_config_rejects_blank_live_mode_env_keys(tmp_path, monkeypatch)
     live_config = json.loads(json.dumps(BASE_CONFIG))
     live_config["execution"]["mode"] = "live"
     _install_dotenv_stub(monkeypatch)
+    monkeypatch.setenv("BYBIT_KEY", "dummy-key")
+    monkeypatch.setenv("BYBIT_SECRET", "dummy-secret")
+
+    module = _import_config_loader(tmp_path, monkeypatch, live_config)
     monkeypatch.setenv("BYBIT_KEY", "   ")
     monkeypatch.setenv("BYBIT_SECRET", "")
 
-    module = _import_config_loader(tmp_path, monkeypatch, live_config)
-
-    with pytest.raises(ValueError, match="Live mode requires BYBIT_KEY and BYBIT_SECRET"):
+    with pytest.raises(ValueError, match="Live mode requires api.bybit_key and api.bybit_secret"):
         module.load_config()
 
 

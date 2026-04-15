@@ -61,7 +61,7 @@ def signal_builder_module(tmp_path, monkeypatch):
         "ccxt": types.SimpleNamespace(bybit=lambda *a, **k: object()),
         "schedule": types.SimpleNamespace(every=lambda *a, **k: types.SimpleNamespace(hours=types.SimpleNamespace(do=lambda *a, **k: None), minutes=types.SimpleNamespace(do=lambda *a, **k: None), do=lambda *a, **k: None), run_pending=lambda: None),
         "pandas": types.SimpleNamespace(DataFrame=lambda *a, **k: types.SimpleNamespace(iloc=types.SimpleNamespace(__getitem__=lambda self, idx: types.SimpleNamespace(**{"ema13": 0, "ema21": 0}))), to_datetime=lambda *a, **k: None),
-        "pandas_ta": types.SimpleNamespace(ema=lambda series, length=None: series),
+        "pandas_ta_classic": types.SimpleNamespace(ema=lambda series, length=None: series),
         "numpy": types.SimpleNamespace(),
         "scipy": types.SimpleNamespace(),
         "scipy.stats": types.SimpleNamespace(linregress=lambda *a, **k: (0, 0, 0, 0, 0)),

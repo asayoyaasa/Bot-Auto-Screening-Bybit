@@ -2,7 +2,7 @@ import logging
 import random
 
 import pandas as pd
-import pandas_ta as ta
+import pandas_ta_classic as ta
 
 from modules.config_loader import CONFIG
 from modules.derivatives import analyze_derivatives
@@ -25,7 +25,7 @@ def calculate_rr(entry, sl, tp3):
 
 def get_btc_bias(fetch_ohlcv, *, context='fetch BTC bias candles'):
     try:
-        bars = fetch_ohlcv('BTC/USDT', '1d', limit=100, context=context)
+        bars = fetch_ohlcv('BTC/USDT:USDT', '1d', limit=100, context=context)
         if not bars:
             return 'Sideways'
         df = pd.DataFrame(bars, columns=['t', 'o', 'h', 'l', 'c', 'v'])

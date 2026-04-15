@@ -1,6 +1,7 @@
 ccxt
 pandas
-pandas_ta
+pandas-ta-classic
+pytz
 numpy
 schedule
 requests

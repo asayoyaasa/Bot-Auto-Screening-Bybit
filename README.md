@@ -449,6 +449,20 @@ Note:
 - If you are unsure what to change in config.json, keep paper mode on and only use test credentials until everything looks correct.
 - Do not switch to live mode until paper mode works for several hours without errors.
 
+### 7.2 Beginner Config Checklist
+Fill in only these fields first:
+- api.telegram_bot_token: your Telegram bot token
+- api.telegram_chat_id: your Telegram chat ID
+- api.discord_webhook: only if you want Discord alerts
+- database.host: your PostgreSQL host
+- database.database: your database name
+- database.user: your database username
+- database.password: your database password
+- database.port: usually 5432
+- execution.mode: paper
+
+Leave the rest alone unless you know why you are changing it.
+
 --------------------------------------------------
 ## 8. Running the Bot
 ### Scanner

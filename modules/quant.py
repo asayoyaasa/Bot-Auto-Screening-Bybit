@@ -1,7 +1,7 @@
 import logging
 
 import numpy as np
-import pandas_ta as ta
+import pandas_ta_classic as ta
 from scipy.special import expit
 
 logger = logging.getLogger(__name__)

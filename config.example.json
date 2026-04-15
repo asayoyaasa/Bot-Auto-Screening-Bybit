@@ -4,7 +4,9 @@
         "telegram_chat_id": "YOUR_TELEGRAM_CHAT_ID",
         "discord_webhook": "YOUR_DISCORD_WEBHOOK_URL",
         "bybit_key": "YOUR_BYBIT_KEY",
-        "bybit_secret": "YOUR_BYBIT_SECRET"
+        "bybit_secret": "YOUR_BYBIT_SECRET",
+        "BYBIT_KEY": "YOUR_BYBIT_KEY",
+        "BYBIT_SECRET": "YOUR_BYBIT_SECRET"
     },
     "notifications": {
         "telegram_enabled": true,
