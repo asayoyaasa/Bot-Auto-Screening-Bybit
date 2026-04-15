@@ -402,6 +402,51 @@ Live mode requires:
 
 Paper mode does not require live credentials to run the execution engine logic.
 
+### 6.5 PostgreSQL Setup (WSL / Ubuntu)
+This bot uses PostgreSQL for trade state and lifecycle tracking. If you are on WSL or a fresh Ubuntu install, do this first:
+
+1. Install PostgreSQL and the client tools:
+```bash
+sudo apt update
+sudo apt install postgresql postgresql-contrib -y
+```
+
+2. Start the PostgreSQL service:
+```bash
+sudo service postgresql start
+```
+
+3. Check that it is running:
+```bash
+sudo service postgresql status
+```
+
+4. Create a database and user:
+```bash
+sudo -u postgres psql
+```
+Then run inside psql:
+```sql
+CREATE DATABASE trading_bot;
+CREATE USER botuser WITH PASSWORD 'yourpassword';
+ALTER ROLE botuser SET client_encoding TO 'utf8';
+ALTER ROLE botuser SET default_transaction_isolation TO 'read committed';
+ALTER ROLE botuser SET timezone TO 'UTC';
+GRANT ALL PRIVILEGES ON DATABASE trading_bot TO botuser;
+\q
+```
+
+5. Put those values into `config.json`:
+- `database.host`: usually `localhost`
+- `database.database`: `trading_bot`
+- `database.user`: `botuser`
+- `database.password`: the password you created
+- `database.port`: `5432`
+
+6. Restart the bot after saving the config.
+
+If PostgreSQL is already installed, you can skip the database creation step and just make sure the service is running and the credentials match.
+
 --------------------------------------------------
 ## 7. Installation
 ```bash
